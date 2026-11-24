@@ -63,6 +63,13 @@ var _reload_tween: Tween
 var _raise_tween: Tween
 var _death_tween: Tween
 
+var _mat_metal: StandardMaterial3D
+var _mat_metal_dark: StandardMaterial3D
+var _mat_wood: StandardMaterial3D
+var _mat_polymer: StandardMaterial3D
+var _mat_steel: StandardMaterial3D
+var _mat_grip: StandardMaterial3D
+
 var _default_colors: Array[Dictionary] = []
 
 

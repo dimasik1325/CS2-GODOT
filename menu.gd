@@ -219,7 +219,7 @@ func _push_panel(panel: Control) -> void:
 func _pop_panel() -> void:
 	if stack.size() <= 1:
 		return
-	var top := stack.pop_back()
+	var top: Control = stack.pop_back()
 	top.visible = false
 	stack[stack.size() - 1].visible = true
 
