@@ -1,0 +1,17 @@
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Сборка PyInstaller
+build/
+dist/
+
+# Кэш Python и Ursina/Panda3D
+__pycache__/
+*.py[cod]
+*.bam
+
+# Пользовательские настройки рантайма и локальный архив
+user_settings.json
+cs2_clone.zip
