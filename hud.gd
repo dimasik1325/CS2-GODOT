@@ -1,22 +1,70 @@
 class_name HUDController
 extends CanvasLayer
-## HUD, построенный полностью программно: здоровье с полосой, патроны,
-## название оружия, прицел из ColorRect, хитмаркер, килл-фид, виньетка урона
-## и экран конца раунда с рестартом по Enter.
+## HUD, построенный полностью программно: прицел, здоровье, патроны, деньги,
+## гранаты, счёт матча, радар, хитмаркер, килл-фид, FPS, виньетка урона,
+## экраны конца раунда и конца матча.
+
+## Радар: вращающийся круг с точками ботов (внутренний класс с _draw).
+class RadarView:
+	extends Control
+	var player: PlayerController
+	var get_bots: Callable
+	var radius := 80.0
+
+	func _draw() -> void:
+		var center := Vector2(radius, radius)
+		draw_circle(center, radius, Color(0.05, 0.08, 0.06, 0.72))
+		draw_arc(center, radius, 0.0, TAU, 48, Color(0.4, 0.9, 0.5, 0.6), 2.0, true)
+		draw_arc(center, radius * 0.5, 0.0, TAU, 32, Color(0.4, 0.9, 0.5, 0.2), 1.0, true)
+		if player == null or not is_instance_valid(player):
+			return
+		# Игрок — стрелка вверх в центре.
+		var points := PackedVector2Array([center + Vector2(0.0, -8.0), center + Vector2(-5.0, 6.0), center + Vector2(5.0, 6.0)])
+		draw_colored_polygon(points, Color(0.5, 1.0, 0.6, 0.95))
+		if get_bots.is_null():
+			return
+		var bots: Variant = get_bots.call()
+		if bots == null:
+			return
+		var basis_x := player.global_transform.basis.x
+		var basis_z := player.global_transform.basis.z
+		var radar_scale := radius / 34.0
+		for node in bots:
+			var bot := node as Node3D
+			if bot == null or not is_instance_valid(bot):
+				continue
+			var bot_data := bot as Bot
+			if bot_data != null and bot_data.state == Bot.BotState.DEAD:
+				continue
+			var rel := bot.global_position - player.global_position
+			var flat := Vector3(rel.x, 0.0, rel.z)
+			if flat.length() > 34.0:
+				flat = flat.normalized() * 34.0
+			var forward_amount := -basis_z.dot(flat)
+			var right_amount := basis_x.dot(flat)
+			var dot_pos := center + Vector2(right_amount, forward_amount) * radar_scale
+			draw_circle(dot_pos, 4.0, Color(1.0, 0.3, 0.25, 0.95))
 
 var root: Control
 var hp_fill: ColorRect
 var hp_label: Label
+var money_label: Label
 var weapon_label: Label
 var ammo_label: Label
+var grenade_label: Label
 var kd_label: Label
 var enemies_label: Label
+var score_label: Label
 var reload_label: Label
+var freeze_label: Label
+var fps_label: Label
 var vignette: ColorRect
 var feed_box: VBoxContainer
+var radar: RadarView
 var end_overlay: Control
 var end_title: Label
 var end_sub: Label
+var end_hint: Label
 var crosshair_parts: Array[ColorRect] = []
 var hitmarker_root: Control
 var _hitmarker_tween: Tween
@@ -33,13 +81,27 @@ func _ready() -> void:
 	add_child(root)
 
 	_build_vignette()
+	_build_radar()
 	_build_crosshair()
 	_build_hitmarker()
 	_build_status_labels()
 	_build_feed()
 	_build_reload_label()
+	_build_freeze_label()
 	_build_end_overlay()
 	_make_unclickable(root)
+
+
+func _process(_delta: float) -> void:
+	if SettingsManager.instance != null:
+		radar.visible = SettingsManager.instance.show_radar
+	if SettingsManager.instance != null and SettingsManager.instance.show_fps:
+		fps_label.visible = true
+		fps_label.text = "%d FPS" % Engine.get_frames_per_second()
+	else:
+		fps_label.visible = false
+	if radar != null and radar.visible:
+		radar.queue_redraw()
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +114,25 @@ func _build_vignette() -> void:
 	vignette.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	vignette.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(vignette)
+
+
+func _build_radar() -> void:
+	radar = RadarView.new()
+	radar.position = Vector2(20.0, 20.0)
+	radar.size = Vector2(160.0, 160.0)
+	radar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(radar)
+
+	fps_label = _make_label("0 FPS", 15, Color(0.4, 0.95, 0.5))
+	fps_label.anchor_left = 0.0
+	fps_label.anchor_top = 1.0
+	fps_label.anchor_right = 0.0
+	fps_label.anchor_bottom = 1.0
+	fps_label.offset_left = 24.0
+	fps_label.offset_top = -34.0
+	fps_label.offset_right = 140.0
+	fps_label.offset_bottom = -10.0
+	root.add_child(fps_label)
 
 
 func _build_crosshair() -> void:
@@ -151,6 +232,18 @@ func _build_status_labels() -> void:
 	hp_label.offset_bottom = -34.0
 	root.add_child(hp_label)
 
+	# Деньги над полосой здоровья.
+	money_label = _make_label("$ 1000", 24, Color(0.45, 0.9, 0.45))
+	money_label.anchor_left = 0.0
+	money_label.anchor_top = 1.0
+	money_label.anchor_right = 0.0
+	money_label.anchor_bottom = 1.0
+	money_label.offset_left = 24.0
+	money_label.offset_top = -102.0
+	money_label.offset_right = 260.0
+	money_label.offset_bottom = -70.0
+	root.add_child(money_label)
+
 	# Оружие и патроны справа внизу.
 	weapon_label = _make_label("AK-47", 20, Color(0.85, 0.85, 0.85))
 	weapon_label.anchor_left = 1.0
@@ -176,32 +269,45 @@ func _build_status_labels() -> void:
 	ammo_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	root.add_child(ammo_label)
 
-	# Счёт и враги сверху слева.
-	kd_label = _make_label("Kills: 0    Deaths: 0", 20, Color(1.0, 1.0, 1.0))
+	grenade_label = _make_label("HE: 2", 18, Color(0.85, 0.85, 0.6))
+	grenade_label.anchor_left = 1.0
+	grenade_label.anchor_top = 1.0
+	grenade_label.anchor_right = 1.0
+	grenade_label.anchor_bottom = 1.0
+	grenade_label.offset_left = -300.0
+	grenade_label.offset_top = -124.0
+	grenade_label.offset_right = -24.0
+	grenade_label.offset_bottom = -98.0
+	grenade_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	root.add_child(grenade_label)
+
+	# K/D и враги — под радаром слева.
+	kd_label = _make_label("Kills: 0    Deaths: 0", 19, Color(1.0, 1.0, 1.0))
 	kd_label.offset_left = 24.0
-	kd_label.offset_top = 14.0
+	kd_label.offset_top = 190.0
 	kd_label.offset_right = 420.0
-	kd_label.offset_bottom = 44.0
+	kd_label.offset_bottom = 218.0
 	root.add_child(kd_label)
 
-	enemies_label = _make_label("Enemies left: 0", 20, Color(1.0, 0.75, 0.35))
+	enemies_label = _make_label("Enemies left: 0", 19, Color(1.0, 0.75, 0.35))
 	enemies_label.offset_left = 24.0
-	enemies_label.offset_top = 44.0
+	enemies_label.offset_top = 218.0
 	enemies_label.offset_right = 420.0
-	enemies_label.offset_bottom = 74.0
+	enemies_label.offset_bottom = 246.0
 	root.add_child(enemies_label)
 
-
-func _build_reload_label() -> void:
-	reload_label = _make_label("RELOADING...", 22, Color(1.0, 0.72, 0.2))
-	reload_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	reload_label.offset_left = -140.0
-	reload_label.offset_right = 140.0
-	reload_label.offset_top = 56.0
-	reload_label.offset_bottom = 88.0
-	reload_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	reload_label.visible = false
-	root.add_child(reload_label)
+	# Счёт матча сверху по центру.
+	score_label = _make_label("YOU 0 : 0 BOTS", 26, Color(1.0, 1.0, 1.0))
+	score_label.anchor_left = 0.5
+	score_label.anchor_top = 0.0
+	score_label.anchor_right = 0.5
+	score_label.anchor_bottom = 0.0
+	score_label.offset_left = -220.0
+	score_label.offset_top = 12.0
+	score_label.offset_right = 220.0
+	score_label.offset_bottom = 46.0
+	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	root.add_child(score_label)
 
 
 func _build_feed() -> void:
@@ -224,6 +330,30 @@ func _build_feed() -> void:
 	feed_box.add_theme_constant_override("separation", 4)
 	feed_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(feed_box)
+
+
+func _build_reload_label() -> void:
+	reload_label = _make_label("RELOADING...", 22, Color(1.0, 0.72, 0.2))
+	reload_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	reload_label.offset_left = -140.0
+	reload_label.offset_right = 140.0
+	reload_label.offset_top = 56.0
+	reload_label.offset_bottom = 88.0
+	reload_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	reload_label.visible = false
+	root.add_child(reload_label)
+
+
+func _build_freeze_label() -> void:
+	freeze_label = _make_label("", 30, Color(1.0, 0.9, 0.4))
+	freeze_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	freeze_label.offset_left = -260.0
+	freeze_label.offset_right = 260.0
+	freeze_label.offset_top = -40.0
+	freeze_label.offset_bottom = 10.0
+	freeze_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	freeze_label.visible = false
+	root.add_child(freeze_label)
 
 
 func _build_end_overlay() -> void:
@@ -258,9 +388,9 @@ func _build_end_overlay() -> void:
 	end_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(end_sub)
 
-	var hint := _make_label("Press ENTER to start next round", 18, Color(0.75, 0.75, 0.75))
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(hint)
+	end_hint = _make_label("Press ENTER to start next round", 18, Color(0.75, 0.75, 0.75))
+	end_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(end_hint)
 
 
 func _make_label(text: String, size: int, color: Color) -> Label:
@@ -284,7 +414,7 @@ func _make_unclickable(control: Control) -> void:
 
 
 # ---------------------------------------------------------------------------
-# Привязка к игроку и оружию.
+# Привязка к игроку, оружию, экономике.
 # ---------------------------------------------------------------------------
 
 func bind_player(player: PlayerController, weapon_manager: WeaponManager) -> void:
@@ -295,6 +425,19 @@ func bind_player(player: PlayerController, weapon_manager: WeaponManager) -> voi
 	weapon_manager.reload_started.connect(_on_reload_started)
 	weapon_manager.reload_finished.connect(_on_reload_finished)
 	weapon_manager.target_hit.connect(show_hitmarker)
+	weapon_manager.grenades_changed.connect(update_grenades)
+	radar.player = player
+	update_grenades(weapon_manager.grenades)
+
+
+func bind_main(save_manager: SaveManager, get_bots: Callable) -> void:
+	radar.get_bots = get_bots
+	save_manager.money_changed.connect(update_money)
+	update_money(save_manager.money)
+
+
+func set_radar_visible(value: bool) -> void:
+	radar.visible = value
 
 
 # ---------------------------------------------------------------------------
@@ -333,8 +476,20 @@ func update_weapon(weapon_name: String) -> void:
 	weapon_label.text = weapon_name
 
 
+func update_grenades(count: int) -> void:
+	grenade_label.text = "HE: %d  [G]" % count
+
+
+func update_money(amount: int) -> void:
+	money_label.text = "$ %d" % amount
+
+
 func update_kd(kills: int, deaths: int) -> void:
 	kd_label.text = "Kills: %d    Deaths: %d" % [kills, deaths]
+
+
+func update_score(player_score: int, bot_score: int) -> void:
+	score_label.text = "YOU %d : %d BOTS" % [player_score, bot_score]
 
 
 func update_enemies(count: int) -> void:
@@ -344,6 +499,14 @@ func update_enemies(count: int) -> void:
 	else:
 		enemies_label.text = "Area clear!"
 		enemies_label.add_theme_color_override("font_color", Color(0.4, 0.95, 0.5))
+
+
+func set_freeze(seconds: float) -> void:
+	if seconds > 0.0:
+		freeze_label.visible = true
+		freeze_label.text = "Round starts in %.1f sec" % seconds
+	else:
+		freeze_label.visible = false
 
 
 func show_hitmarker(headshot: bool = false, killed: bool = false) -> void:
@@ -410,15 +573,29 @@ func _on_player_died() -> void:
 		rect.visible = false
 
 
-func show_round_end(victory: bool, kills: int, deaths: int) -> void:
+func show_round_end(victory: bool, kills: int, deaths: int, player_score: int, bot_score: int) -> void:
 	if victory:
-		end_title.text = "VICTORY"
+		end_title.text = "ROUND WON"
 		end_title.add_theme_color_override("font_color", Color(0.35, 0.9, 0.45))
-		end_sub.text = "All terrorists eliminated.    Kills: %d   Deaths: %d" % [kills, deaths]
+		end_sub.text = "All terrorists eliminated.    %d : %d" % [player_score, bot_score]
 	else:
-		end_title.text = "DEFEAT"
+		end_title.text = "ROUND LOST"
 		end_title.add_theme_color_override("font_color", Color(0.95, 0.3, 0.25))
-		end_sub.text = "You were eliminated.    Kills: %d   Deaths: %d" % [kills, deaths]
+		end_sub.text = "You were eliminated.    %d : %d" % [player_score, bot_score]
+	end_hint.text = "K %d / D %d   —   Press ENTER for next round" % [kills, deaths]
+	end_overlay.visible = true
+
+
+func show_match_end(win: bool, player_score: int, bot_score: int) -> void:
+	if win:
+		end_title.text = "MATCH VICTORY!"
+		end_title.add_theme_color_override("font_color", Color(1.0, 0.84, 0.0))
+		end_sub.text = "Final score %d : %d.    Reward: $1000" % [player_score, bot_score]
+	else:
+		end_title.text = "MATCH DEFEAT"
+		end_title.add_theme_color_override("font_color", Color(0.95, 0.3, 0.25))
+		end_sub.text = "Final score %d : %d.    Reward: $400" % [player_score, bot_score]
+	end_hint.text = "Press ENTER to return to the main menu"
 	end_overlay.visible = true
 
 
@@ -430,6 +607,7 @@ func reset_for_round() -> void:
 	hide_round_end()
 	vignette.color = Color(0.75, 0.05, 0.05, 0.0)
 	reload_label.visible = false
+	freeze_label.visible = false
 	for rect in crosshair_parts:
 		rect.visible = true
 	for child in feed_box.get_children():

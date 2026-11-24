@@ -1,68 +1,96 @@
 extends Node3D
-## CS2-GODOT: корневой скрипт единственной сцены (Main.tscn).
-## Вся игра строится процедурно отсюда: небо и освещение, карта в стиле Dust 2,
-## игрок, боты, HUD, регистрация клавиш и система раундов.
+## CS2-GODOT v2.0: корневой скрипт единственной сцены (Main.tscn).
+## Управляет всей игрой: главное меню (на фоне — живая карта с облётом
+## камерой), настройками, кейсами, раундами и матчем, спавном игрока и ботов.
 ##
-## ВАЖНО: никакие узлы, кроме корневого Node3D, в редакторе создавать не нужно.
+## ВАЖНО: в редакторе не нужно создавать ничего, кроме корневого Node3D
+## со скриптом main.gd (сцена Main.tscn уже в проекте).
 
-const ARENA_HALF := 30.0
-const WALL_HEIGHT := 6.0
-const BOT_COUNT := 5
-const PLAYER_SPAWN := Vector3(0.0, 0.15, 24.0)
-const PLAYER_SPAWN_YAW := 0.0
+enum GameState { IN_MENU, FREEZE, LIVE, ROUND_END, MATCH_END }
 
-const BOT_SPAWNS: Array = [
-	Vector3(-20.0, 0.15, -20.0),
-	Vector3(20.0, 0.15, -20.0),
-	Vector3(-24.0, 0.15, -2.0),
-	Vector3(24.0, 0.15, -2.0),
-	Vector3(0.0, 0.15, -24.0),
-]
+const FREEZE_TIME := 2.5
+const KILL_REWARD := 300
+const KNIFE_KILL_REWARD := 750
+const ROUND_WIN_REWARD := 1000
+const ROUND_LOSS_REWARD := 400
+const MATCH_WIN_BONUS := 1000
 
-var mat_sand: StandardMaterial3D
-var mat_sand_dark: StandardMaterial3D
-var mat_wall: StandardMaterial3D
-var mat_trim: StandardMaterial3D
-var wood_mats: Array[StandardMaterial3D] = []
-var barrel_colors: Array[Color] = []
+var state: GameState = GameState.IN_MENU
 
-var player: PlayerController
+# Подсистемы.
+var settings: SettingsManager
+var sfx: SfxManager
+var save_manager: SaveManager
+var map_builder: MapBuilder
+var menu: MenuController
 var hud: HUDController
-var bots: Array[Bot] = []
 
-var round_active := false
-var round_seq := 0
+# Окружение.
+var env: Environment
+var sun: DirectionalLight3D
+var sky_material: ProceduralSkyMaterial
+var menu_camera: Camera3D
+var _menu_angle := 0.0
+
+# Матч.
+var player: PlayerController
+var bots: Array[Bot] = []
+var player_score := 0
+var bot_score := 0
 var kills := 0
 var deaths := 0
 var bots_alive := 0
+var round_seq := 0
+var freeze_left := 0.0
 
 
 func _ready() -> void:
 	randomize()
 	_register_inputs()
-	_build_materials()
+	# Менеджеры (синглтоны через статические поля).
+	settings = SettingsManager.new()
+	settings.name = "SettingsManager"
+	add_child(settings)
+	sfx = SfxManager.new()
+	sfx.name = "SfxManager"
+	add_child(sfx)
+	save_manager = SaveManager.new()
+	save_manager.name = "SaveManager"
+	add_child(save_manager)
+
 	_build_environment()
-	_build_map()
+	map_builder = MapBuilder.new()
+	map_builder.name = "MapRoot"
+	add_child(map_builder)
+	_rebuild_map(settings.map_index)
+	settings.apply_all()
+
 	hud = HUDController.new()
 	hud.name = "HUD"
 	add_child(hud)
-	player = PlayerController.new()
-	player.name = "Player"
-	add_child(player)
-	hud.bind_player(player, player.weapon_manager)
-	_start_round()
+	hud.visible = false
+	hud.bind_main(save_manager, _get_bots_for_radar)
+
+	menu = MenuController.new()
+	menu.name = "Menu"
+	add_child(menu)
+	menu.start_requested.connect(_start_match)
+	menu.map_changed.connect(_on_map_changed)
+	menu.resume_requested.connect(_resume_game)
+	menu.quit_to_menu_requested.connect(_quit_to_menu)
+	menu.esc_pressed.connect(_on_menu_esc)
+	menu.show_main()
+
+	_build_menu_camera()
 
 
-func _unhandled_input(event: InputEvent) -> void:
-	if round_active:
-		return
-	if event.is_action_pressed("restart_round"):
-		_start_round()
+func _get_bots_for_radar() -> Array:
+	return bots
 
 
 # ---------------------------------------------------------------------------
 # Ввод: весь Input Map регистрируется кодом, настройки проекта не требуются.
-# Используются ФИЗИЧЕСКИЕ коды клавиш — раскладка (RU/EN) не имеет значения.
+# Физические коды клавиш — раскладка (RU/EN) не имеет значения.
 # ---------------------------------------------------------------------------
 
 func _register_inputs() -> void:
@@ -77,6 +105,7 @@ func _register_inputs() -> void:
 		"weapon_1": [KEY_1],
 		"weapon_2": [KEY_2],
 		"weapon_3": [KEY_3],
+		"throw_grenade": [KEY_G, KEY_4],
 		"restart_round": [KEY_ENTER, KEY_KP_ENTER],
 	}
 	for action in key_actions:
@@ -87,235 +116,131 @@ func _register_inputs() -> void:
 			var key_event := InputEventKey.new()
 			key_event.physical_keycode = key
 			InputMap.action_add_event(action, key_event)
-	if not InputMap.has_action("fire"):
-		InputMap.add_action("fire", 0.5)
-		var mouse_event := InputEventMouseButton.new()
-		mouse_event.button_index = MOUSE_BUTTON_LEFT
-		InputMap.action_add_event("fire", mouse_event)
+	var mouse_actions := {
+		"fire": [MOUSE_BUTTON_LEFT],
+		"aim": [MOUSE_BUTTON_RIGHT],
+	}
+	for action in mouse_actions:
+		if InputMap.has_action(action):
+			continue
+		InputMap.add_action(action, 0.5)
+		for button in mouse_actions[action]:
+			var mouse_event := InputEventMouseButton.new()
+			mouse_event.button_index = button
+			InputMap.action_add_event(action, mouse_event)
 
 
 # ---------------------------------------------------------------------------
-# Окружение: процедурное небо, туман, солнце с тенями.
+# Окружение и карта.
 # ---------------------------------------------------------------------------
 
 func _build_environment() -> void:
-	var sky_material := ProceduralSkyMaterial.new()
-	sky_material.sky_top_color = Color(0.22, 0.46, 0.82)
-	sky_material.sky_horizon_color = Color(0.83, 0.83, 0.76)
-	sky_material.ground_horizon_color = Color(0.79, 0.74, 0.63)
-	sky_material.ground_bottom_color = Color(0.5, 0.45, 0.36)
-	sky_material.sun_angle_max = 25.0
-	sky_material.sun_curve = 0.12
-
+	sky_material = ProceduralSkyMaterial.new()
 	var sky := Sky.new()
 	sky.sky_material = sky_material
 
-	var env := Environment.new()
+	env = Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_sky_contribution = 1.0
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.85, 0.79, 0.66)
-	env.fog_density = 0.0035
 	env.fog_sky_affect = 0.12
 
 	var world_env := WorldEnvironment.new()
 	world_env.environment = env
 	add_child(world_env)
 
-	var sun := DirectionalLight3D.new()
-	sun.light_color = Color(1.0, 0.94, 0.82)
-	sun.light_energy = 1.25
+	sun = DirectionalLight3D.new()
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 90.0
-	sun.rotation_degrees = Vector3(-48.0, -32.0, 0.0)
 	add_child(sun)
 
-
-func _build_materials() -> void:
-	mat_sand = _make_mat(Color(0.76, 0.66, 0.46), 1.0, 0.0)
-	mat_sand_dark = _make_mat(Color(0.66, 0.56, 0.38), 1.0, 0.0)
-	mat_wall = _make_mat(Color(0.79, 0.69, 0.5), 0.95, 0.0)
-	mat_trim = _make_mat(Color(0.55, 0.46, 0.32), 0.9, 0.0)
-	wood_mats = [
-		_make_mat(Color(0.52, 0.36, 0.2), 0.85, 0.0),
-		_make_mat(Color(0.45, 0.3, 0.16), 0.85, 0.0),
-		_make_mat(Color(0.6, 0.44, 0.26), 0.85, 0.0),
-	]
-	barrel_colors = [
-		Color(0.5, 0.16, 0.12),
-		Color(0.16, 0.3, 0.45),
-		Color(0.32, 0.4, 0.16),
-	]
+	settings.sun = sun
+	settings.env = env
 
 
-func _make_mat(color: Color, roughness: float, metallic: float) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = color
-	m.roughness = roughness
-	m.metallic = metallic
-	return m
+func _apply_theme(theme: Dictionary) -> void:
+	sky_material.sky_top_color = theme["sky_top"]
+	sky_material.sky_horizon_color = theme["sky_horizon"]
+	sky_material.ground_horizon_color = theme["ground_horizon"]
+	sky_material.ground_bottom_color = theme["ground_bottom"]
+	sun.light_color = theme["sun_color"]
+	sun.light_energy = theme["sun_energy"]
+	sun.rotation_degrees = theme["sun_deg"]
+	env.fog_light_color = theme["fog_color"]
+	env.fog_density = theme["fog_density"]
+	env.ambient_light_energy = theme["ambient"]
 
 
-# ---------------------------------------------------------------------------
-# Карта: песчаный пол, стены по периметру, деревянные ящики разных высот,
-# низкие стенки, L-образные укрытия и бочки. Всё со StaticBody3D + коллизией.
-# ---------------------------------------------------------------------------
-
-func _build_map() -> void:
-	var half := ARENA_HALF
-	# Пол.
-	_add_box(Vector3(0.0, -0.25, 0.0), Vector3(half * 2.0 + 4.0, 0.5, half * 2.0 + 4.0), mat_sand, 0.0)
-	# Песчаные пятна — только меш, без коллизии.
-	_add_patch(Vector3(-8.0, 0.012, 10.0), Vector3(10.0, 0.02, 7.0))
-	_add_patch(Vector3(12.0, 0.012, -6.0), Vector3(8.0, 0.02, 9.0))
-	_add_patch(Vector3(-12.0, 0.012, -14.0), Vector3(9.0, 0.02, 8.0))
-	_add_patch(Vector3(5.0, 0.012, 18.0), Vector3(6.0, 0.02, 5.0))
-	# Стены по периметру.
-	_add_box(Vector3(0.0, WALL_HEIGHT * 0.5, -(half + 0.5)), Vector3(half * 2.0 + 3.0, WALL_HEIGHT, 1.0), mat_wall, 0.0)
-	_add_box(Vector3(0.0, WALL_HEIGHT * 0.5, half + 0.5), Vector3(half * 2.0 + 3.0, WALL_HEIGHT, 1.0), mat_wall, 0.0)
-	_add_box(Vector3(-(half + 0.5), WALL_HEIGHT * 0.5, 0.0), Vector3(1.0, WALL_HEIGHT, half * 2.0 + 3.0), mat_wall, 0.0)
-	_add_box(Vector3(half + 0.5, WALL_HEIGHT * 0.5, 0.0), Vector3(1.0, WALL_HEIGHT, half * 2.0 + 3.0), mat_wall, 0.0)
-	# Верхняя окантовка стен.
-	_add_box(Vector3(0.0, WALL_HEIGHT + 0.15, -(half + 0.5)), Vector3(half * 2.0 + 3.0, 0.3, 1.3), mat_trim, 0.0)
-	_add_box(Vector3(0.0, WALL_HEIGHT + 0.15, half + 0.5), Vector3(half * 2.0 + 3.0, 0.3, 1.3), mat_trim, 0.0)
-	_add_box(Vector3(-(half + 0.5), WALL_HEIGHT + 0.15, 0.0), Vector3(1.3, 0.3, half * 2.0 + 3.0), mat_trim, 0.0)
-	_add_box(Vector3(half + 0.5, WALL_HEIGHT + 0.15, 0.0), Vector3(1.3, 0.3, half * 2.0 + 3.0), mat_trim, 0.0)
-	# L-образные укрытия в углах.
-	_add_box(Vector3(-20.0, 1.5, 6.0), Vector3(0.6, 3.0, 9.0), mat_wall, 0.0)
-	_add_box(Vector3(-16.5, 1.5, 10.6), Vector3(7.7, 3.0, 0.6), mat_wall, 0.0)
-	_add_box(Vector3(20.0, 1.5, 6.0), Vector3(0.6, 3.0, 9.0), mat_wall, 0.0)
-	_add_box(Vector3(16.5, 1.5, 10.6), Vector3(7.7, 3.0, 0.6), mat_wall, 0.0)
-	_add_box(Vector3(-20.0, 1.5, -6.0), Vector3(0.6, 3.0, 9.0), mat_wall, 0.0)
-	_add_box(Vector3(-16.5, 1.5, -10.6), Vector3(7.7, 3.0, 0.6), mat_wall, 0.0)
-	_add_box(Vector3(20.0, 1.5, -6.0), Vector3(0.6, 3.0, 9.0), mat_wall, 0.0)
-	_add_box(Vector3(16.5, 1.5, -10.6), Vector3(7.7, 3.0, 0.6), mat_wall, 0.0)
-	# Низкие стенки (укрытие по грудь).
-	_add_box(Vector3(0.0, 0.6, 10.0), Vector3(6.0, 1.2, 0.6), mat_wall, 0.0)
-	_add_box(Vector3(0.0, 0.6, -10.0), Vector3(6.0, 1.2, 0.6), mat_wall, 0.0)
-	_add_box(Vector3(13.0, 0.6, 6.0), Vector3(0.6, 1.2, 7.0), mat_wall, 0.0)
-	_add_box(Vector3(-13.0, 0.6, 6.0), Vector3(0.6, 1.2, 7.0), mat_wall, 0.0)
-	# Центр карты (mid).
-	_add_crate_ground(0.0, 0.0, 1.8, 0.0)
-	_add_crate_ground(-2.0, 1.4, 1.0, 12.0)
-	_add_crate_ground(2.2, -1.6, 1.0, -9.0)
-	_add_crate(Vector3(0.1, 2.3, 0.1), 1.0, 5.0)
-	# «Ворота» из ящиков слева.
-	_add_crate_ground(-9.0, 4.0, 1.4, 6.0)
-	_add_crate_ground(-9.0, 2.6, 1.4, -4.0)
-	_add_crate_ground(-9.0, 1.2, 1.4, 3.0)
-	_add_crate(Vector3(-9.0, 1.9, 2.6), 1.0, 0.0)
-	# «Ворота» из ящиков справа.
-	_add_crate_ground(9.0, -2.0, 1.4, -7.0)
-	_add_crate_ground(9.0, -3.4, 1.4, 5.0)
-	_add_crate_ground(9.0, -4.8, 1.4, -3.0)
-	_add_crate(Vector3(9.0, 1.9, -3.4), 1.0, 0.0)
-	# Сторона игрока (спавн).
-	_add_crate_ground(-5.0, 15.0, 1.0, 8.0)
-	_add_crate_ground(6.0, 16.0, 1.4, -6.0)
-	_add_crate_ground(14.0, 12.0, 1.0, 4.0)
-	_add_crate_ground(-14.0, 14.0, 1.4, -8.0)
-	_add_crate_ground(-2.0, 20.0, 1.0, 3.0)
-	# Сторона ботов.
-	_add_crate_ground(-6.0, -14.0, 1.4, 7.0)
-	_add_crate_ground(6.0, -13.0, 1.0, -5.0)
-	_add_crate_ground(-14.0, -10.0, 1.4, 4.0)
-	_add_crate_ground(14.0, -11.0, 1.4, -6.0)
-	_add_crate_ground(0.0, -18.0, 1.8, 2.0)
-	_add_crate_ground(-1.9, -18.2, 1.0, 0.0)
-	_add_crate_ground(18.0, -20.0, 1.0, 9.0)
-	_add_crate_ground(-18.0, -19.0, 1.4, -7.0)
-	_add_crate_ground(22.0, -8.0, 1.0, 5.0)
-	_add_crate_ground(-22.0, -9.0, 1.0, -4.0)
-	# Фланги.
-	_add_crate_ground(-16.0, 4.0, 1.0, 6.0)
-	_add_crate_ground(16.0, 6.0, 1.4, -5.0)
-	_add_crate_ground(-18.0, -6.0, 1.0, 3.0)
-	_add_crate_ground(18.0, -4.0, 1.0, -8.0)
-	# Бочки.
-	_add_barrel(Vector3(-4.5, 0.0, 8.5), 0)
-	_add_barrel(Vector3(4.8, 0.0, 9.5), 1)
-	_add_barrel(Vector3(12.0, 0.0, 2.0), 2)
-	_add_barrel(Vector3(-12.0, 0.0, -3.0), 0)
-	_add_barrel(Vector3(4.5, 0.0, -9.0), 1)
-	_add_barrel(Vector3(-7.0, 0.0, -16.0), 2)
-	_add_barrel(Vector3(7.6, 0.0, 17.6), 0)
+func _rebuild_map(theme_index: int) -> void:
+	map_builder.build_map(theme_index, randi() % MapBuilder.LAYOUT_NAMES.size())
+	_apply_theme(map_builder.get_theme(theme_index))
 
 
-func _add_box(center: Vector3, size: Vector3, mat: StandardMaterial3D, yaw_deg: float) -> StaticBody3D:
-	var body := StaticBody3D.new()
-	body.collision_layer = 1
-	body.collision_mask = 0
-	var mesh_instance := MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = size
-	mesh_instance.mesh = box
-	mesh_instance.material_override = mat
-	body.add_child(mesh_instance)
-	var col := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = size
-	col.shape = shape
-	body.add_child(col)
-	body.position = center
-	body.rotation_degrees.y = yaw_deg
-	add_child(body)
-	return body
+func _build_menu_camera() -> void:
+	menu_camera = Camera3D.new()
+	menu_camera.name = "MenuCamera"
+	menu_camera.fov = 70.0
+	add_child(menu_camera)
+	menu_camera.make_current()
 
 
-func _add_patch(center: Vector3, size: Vector3) -> void:
-	var mesh_instance := MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = size
-	mesh_instance.mesh = box
-	mesh_instance.material_override = mat_sand_dark
-	mesh_instance.position = center
-	add_child(mesh_instance)
+func _on_map_changed(index: int) -> void:
+	if state == GameState.IN_MENU:
+		_rebuild_map(index)
 
 
-func _add_crate_ground(x: float, z: float, s: float, yaw_deg: float) -> void:
-	var mat: StandardMaterial3D = wood_mats[randi() % wood_mats.size()]
-	_add_box(Vector3(x, s * 0.5, z), Vector3(s, s, s), mat, yaw_deg)
-
-
-func _add_crate(center: Vector3, s: float, yaw_deg: float) -> void:
-	var mat: StandardMaterial3D = wood_mats[randi() % wood_mats.size()]
-	_add_box(center, Vector3(s, s, s), mat, yaw_deg)
-
-
-func _add_barrel(pos: Vector3, color_index: int) -> void:
-	var body := StaticBody3D.new()
-	body.collision_layer = 1
-	body.collision_mask = 0
-	var mesh_instance := MeshInstance3D.new()
-	var cylinder := CylinderMesh.new()
-	cylinder.top_radius = 0.42
-	cylinder.bottom_radius = 0.42
-	cylinder.height = 0.95
-	mesh_instance.mesh = cylinder
-	var color: Color = barrel_colors[color_index % barrel_colors.size()]
-	mesh_instance.material_override = _make_mat(color.darkened(randf() * 0.1), 0.55, 0.35)
-	body.add_child(mesh_instance)
-	var col := CollisionShape3D.new()
-	var shape := CylinderShape3D.new()
-	shape.radius = 0.42
-	shape.height = 0.95
-	col.shape = shape
-	body.add_child(col)
-	body.position = pos + Vector3(0.0, 0.475, 0.0)
-	add_child(body)
+func _process(delta: float) -> void:
+	if state == GameState.IN_MENU and not get_tree().paused:
+		# Медленный облёт карты за меню.
+		_menu_angle += delta * 0.08
+		var radius := 26.0
+		menu_camera.position = Vector3(cos(_menu_angle) * radius, 11.0, sin(_menu_angle) * radius)
+		menu_camera.look_at(Vector3(0.0, 1.0, 0.0))
+	elif state == GameState.FREEZE:
+		freeze_left -= delta
+		hud.set_freeze(maxf(0.0, freeze_left))
+		if freeze_left <= 0.0:
+			_begin_live()
 
 
 # ---------------------------------------------------------------------------
-# Игрок и боты.
+# Меню → матч.
 # ---------------------------------------------------------------------------
+
+func _start_match() -> void:
+	player_score = 0
+	bot_score = 0
+	kills = 0
+	deaths = 0
+	menu.hide_all()
+	menu.visible = false
+	hud.visible = true
+	hud.set_radar_visible(settings.show_radar)
+
+	player = PlayerController.new()
+	player.name = "Player"
+	add_child(player)
+	hud.bind_player(player, player.weapon_manager)
+	player.activate_camera()
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+	hud.update_score(player_score, bot_score)
+	hud.update_kd(kills, deaths)
+	SfxManager.instance.play("buy", -4.0)
+	_begin_round()
+
 
 func _spawn_bots() -> void:
-	var spawns: Array = BOT_SPAWNS.duplicate()
+	for bot in bots:
+		if is_instance_valid(bot):
+			bot.queue_free()
+	bots.clear()
+	var spawns := map_builder.bot_spawns.duplicate()
 	spawns.shuffle()
-	for i in BOT_COUNT:
+	for i in settings.bots_count:
 		var bot := Bot.new()
 		bot.name = "Bot%d" % (i + 1)
 		bot.bot_name = "Bot-%d" % (i + 1)
@@ -323,37 +248,48 @@ func _spawn_bots() -> void:
 		bot.position = spawns[i % spawns.size()]
 		add_child(bot)
 		bot.died.connect(_on_bot_died)
+		bot.set_combat_enabled(false)
 		bots.append(bot)
-
-
-# ---------------------------------------------------------------------------
-# Система раундов.
-# ---------------------------------------------------------------------------
-
-func _start_round() -> void:
-	round_seq += 1
-	round_active = true
-	for bot in bots:
-		if is_instance_valid(bot):
-			bot.queue_free()
-	bots.clear()
-	_spawn_bots()
 	bots_alive = bots.size()
-	player.controls_enabled = true
-	player.reset_for_round(PLAYER_SPAWN, PLAYER_SPAWN_YAW)
-	hud.reset_for_round()
-	hud.update_kd(kills, deaths)
 	hud.update_enemies(bots_alive)
+
+
+func _begin_round() -> void:
+	round_seq += 1
+	state = GameState.FREEZE
+	freeze_left = FREEZE_TIME
+	player.controls_enabled = false
+	player.reset_for_round(map_builder.player_spawn, 0.0)
+	# Каждый раунд — свежая волна ботов.
+	_spawn_bots()
+	hud.reset_for_round()
+	hud.update_score(player_score, bot_score)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
+
+func _begin_live() -> void:
+	state = GameState.LIVE
+	hud.set_freeze(-1.0)
+	player.controls_enabled = true
+	for bot in bots:
+		if is_instance_valid(bot):
+			bot.set_combat_enabled(true)
+
+
+# ---------------------------------------------------------------------------
+# Убийства и раунды.
+# ---------------------------------------------------------------------------
 
 func _on_bot_died(bot: Node3D, weapon: String) -> void:
 	var dead_bot := bot as Bot
 	if dead_bot != null:
 		bots.erase(dead_bot)
-	if not round_active:
+	if state != GameState.LIVE:
 		return
 	kills += 1
+	SaveManager.instance.add_kill()
+	SaveManager.instance.add_money(KNIFE_KILL_REWARD if weapon == "Knife" else KILL_REWARD)
+	SfxManager.instance.play("kill", -2.0)
 	bots_alive = maxi(0, bots_alive - 1)
 	hud.update_kd(kills, deaths)
 	hud.update_enemies(bots_alive)
@@ -365,24 +301,117 @@ func _on_bot_died(bot: Node3D, weapon: String) -> void:
 
 
 func _on_player_died() -> void:
-	if not round_active:
+	if state != GameState.LIVE:
 		return
 	deaths += 1
+	SaveManager.instance.add_death()
 	hud.update_kd(kills, deaths)
-	hud.add_kill_feed(player.last_attacker_name, "You", "AK-47")
+	var attacker := "Enemy"
+	if player != null:
+		attacker = player.last_attacker_name
+	hud.add_kill_feed(attacker, "You", "AK-47")
 	_end_round(false)
 
 
 func _end_round(victory: bool) -> void:
-	if not round_active:
+	if state != GameState.LIVE:
 		return
-	round_active = false
+	state = GameState.ROUND_END
 	player.controls_enabled = false
 	for bot in bots:
 		if is_instance_valid(bot):
 			bot.set_combat_enabled(false)
+	if victory:
+		player_score += 1
+		SaveManager.instance.add_money(ROUND_WIN_REWARD)
+		SfxManager.instance.play("round_win", 0.0)
+	else:
+		bot_score += 1
+		SaveManager.instance.add_money(ROUND_LOSS_REWARD)
+		SfxManager.instance.play("round_lose", 0.0)
+	hud.update_score(player_score, bot_score)
 	var seq := round_seq
-	await get_tree().create_timer(0.8).timeout
+	await get_tree().create_timer(0.9).timeout
 	if seq != round_seq:
 		return
-	hud.show_round_end(victory, kills, deaths)
+	# Проверяем конец матча.
+	if player_score >= settings.match_rounds or bot_score >= settings.match_rounds:
+		_finish_match(player_score >= settings.match_rounds)
+	else:
+		hud.show_round_end(victory, kills, deaths, player_score, bot_score)
+
+
+func _finish_match(win: bool) -> void:
+	state = GameState.MATCH_END
+	if win:
+		SaveManager.instance.add_money(MATCH_WIN_BONUS)
+		SaveManager.instance.add_match_win()
+	hud.show_match_end(win, player_score, bot_score)
+
+
+func _back_to_menu() -> void:
+	round_seq += 1
+	state = GameState.IN_MENU
+	get_tree().paused = false
+	for bot in bots:
+		if is_instance_valid(bot):
+			bot.queue_free()
+	bots.clear()
+	if player != null and is_instance_valid(player):
+		player.queue_free()
+	player = null
+	hud.visible = false
+	menu.visible = true
+	menu.make_root_visible()
+	menu.show_main()
+	menu_camera.make_current()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+# ---------------------------------------------------------------------------
+# Пауза и глобальный ввод.
+# ---------------------------------------------------------------------------
+
+func _resume_game() -> void:
+	get_tree().paused = false
+	menu.hide_all()
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _quit_to_menu() -> void:
+	get_tree().paused = false
+	_back_to_menu()
+
+
+func _set_paused(value: bool) -> void:
+	get_tree().paused = value
+	if value:
+		menu.visible = true
+		menu.make_root_visible()
+		menu.show_pause()
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	else:
+		menu.hide_all()
+		menu.visible = false
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _on_menu_esc() -> void:
+	if get_tree().paused:
+		_resume_game()
+		return
+	match state:
+		GameState.IN_MENU:
+			menu.go_back()
+		GameState.MATCH_END:
+			_back_to_menu()
+		GameState.FREEZE, GameState.LIVE, GameState.ROUND_END:
+			_set_paused(true)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("restart_round"):
+		if state == GameState.ROUND_END:
+			_begin_round()
+		elif state == GameState.MATCH_END:
+			_back_to_menu()

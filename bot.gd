@@ -1,9 +1,9 @@
 class_name Bot
 extends CharacterBody3D
-## Бот-террорист: патрулирует территорию по случайным точкам, проверяет
-## прямую видимость игрока через PhysicsRayQueryParameters3D, при обнаружении
-## преследует и стреляет очередями с задержкой реакции и разбросом.
-## При попадании — красная вспышка материала, при смерти — анимация падения.
+## Бот-террорист: анимированная модель (ноги/руки/шлем/разгрузка), патрулирование,
+## проверка видимости через PhysicsRayQueryParameters3D, погоня, стрельба
+## очередями с задержкой реакции и разбросом (зависят от сложности),
+## красная вспышка при попадании и падение при смерти.
 
 signal died(bot: Node3D, weapon_name: String)
 
@@ -15,14 +15,19 @@ const CHASE_SPEED := 4.4
 const ACCEL := 16.0
 const ATTACK_MIN_DIST := 6.0
 const ATTACK_MAX_DIST := 20.0
-const VISION_DIST := 40.0
 const FOV_DEG := 105.0
 const HEARING_RADIUS := 26.0
-const REACTION_MIN := 0.4
-const REACTION_MAX := 0.9
 const SHOT_INTERVAL := 0.16
 const PATROL_BOUNDS := 26.0
 const HEAD_HEIGHT := 1.45
+const SHOULDER_HEIGHT := 1.32
+
+## Пресеты сложности: reaction_min, reaction_max, spread_mult, vision_dist, damage_mult.
+const DIFFICULTIES: Dictionary = {
+	0: {"reaction_min": 1.0, "reaction_max": 1.7, "spread_mult": 1.8, "vision_dist": 28.0, "damage_mult": 0.7},
+	1: {"reaction_min": 0.5, "reaction_max": 0.95, "spread_mult": 1.0, "vision_dist": 40.0, "damage_mult": 1.0},
+	2: {"reaction_min": 0.28, "reaction_max": 0.5, "spread_mult": 0.55, "vision_dist": 48.0, "damage_mult": 1.25},
+}
 
 var player: PlayerController
 var bot_name := "Bot"
@@ -30,6 +35,12 @@ var weapon_name := "AK-47"
 var ai_enabled := true
 var health := 100.0
 var state: BotState = BotState.PATROL
+
+var _reaction_min := 0.5
+var _reaction_max := 0.95
+var _spread_mult := 1.0
+var _vision_dist := 40.0
+var _damage_mult := 1.0
 
 var _visible_now := false
 var _unseen_time := 10.0
@@ -48,7 +59,12 @@ var _strafe_dir := 1.0
 var _strafe_timer := 0.0
 
 var _visual: Node3D
+var _arms: Node3D
+var _leg_l: Node3D
+var _leg_r: Node3D
+var _torso: Node3D
 var _muzzle: Node3D
+var _walk_phase := 0.0
 var _flash_mats: Array[StandardMaterial3D] = []
 var _flash_tween: Tween
 var _death_tween: Tween
@@ -58,13 +74,26 @@ func _ready() -> void:
 	collision_layer = 4
 	collision_mask = 1 | 2 | 4
 	add_to_group("bots")
+	_apply_difficulty()
 	_build_model()
 	_pick_waypoint()
 	_perception_timer = randf_range(0.0, 0.15)
 
 
+func _apply_difficulty() -> void:
+	var preset: Dictionary = DIFFICULTIES[1]
+	if SettingsManager.instance != null:
+		var index := clampi(SettingsManager.instance.difficulty, 0, 2)
+		preset = DIFFICULTIES[index]
+	_reaction_min = float(preset["reaction_min"])
+	_reaction_max = float(preset["reaction_max"])
+	_spread_mult = float(preset["spread_mult"])
+	_vision_dist = float(preset["vision_dist"])
+	_damage_mult = float(preset["damage_mult"])
+
+
 # ---------------------------------------------------------------------------
-# Модель бота из примитивов.
+# Модель бота из примитивов (с анимируемыми ногами и руками).
 # ---------------------------------------------------------------------------
 
 func _build_model() -> void:
@@ -84,23 +113,66 @@ func _build_model() -> void:
 	var pants_mat := _flashable_mat(Color(0.27, 0.25, 0.22).darkened(randf() * 0.1))
 	var skin_mat := _flashable_mat(Color(0.72, 0.55, 0.42))
 	_flash_mats = [shirt_mat, pants_mat, skin_mat]
-
 	var mask_mat := _make_mat(Color(0.12, 0.12, 0.13), 0.8, 0.0)
+	var helmet_mat := _make_mat(Color(0.18, 0.2, 0.16), 0.6, 0.2)
 	var gun_mat := _make_mat(Color(0.14, 0.14, 0.15), 0.5, 0.6)
 	var vest_mat := _make_mat(Color(0.2, 0.18, 0.15), 0.85, 0.0)
+	var pouch_mat := _make_mat(Color(0.15, 0.13, 0.1), 0.9, 0.0)
 
-	_add_box_part(_visual, Vector3(0.42, 0.7, 0.26), pants_mat, Vector3(0.0, 0.35, 0.0))
-	_add_box_part(_visual, Vector3(0.5, 0.62, 0.3), shirt_mat, Vector3(0.0, 1.0, 0.0))
-	_add_box_part(_visual, Vector3(0.53, 0.32, 0.34), vest_mat, Vector3(0.0, 1.06, 0.0))
-	_add_box_part(_visual, Vector3(0.13, 0.48, 0.13), shirt_mat, Vector3(-0.32, 1.0, 0.02), Vector3(0.0, 0.0, 6.0))
-	_add_box_part(_visual, Vector3(0.13, 0.48, 0.13), shirt_mat, Vector3(0.32, 1.0, 0.02), Vector3(0.0, 0.0, -6.0))
-	_add_box_part(_visual, Vector3(0.26, 0.26, 0.26), skin_mat, Vector3(0.0, 1.5, 0.0))
-	_add_box_part(_visual, Vector3(0.275, 0.13, 0.275), mask_mat, Vector3(0.0, 1.58, 0.0))
-	_add_box_part(_visual, Vector3(0.07, 0.09, 0.55), gun_mat, Vector3(0.18, 1.18, -0.3))
+	# Торс + разгрузка с подсумками.
+	_torso = Node3D.new()
+	_visual.add_child(_torso)
+	_add_box_part(_torso, Vector3(0.5, 0.62, 0.3), shirt_mat, Vector3(0.0, 1.0, 0.0))
+	_add_box_part(_torso, Vector3(0.53, 0.32, 0.34), vest_mat, Vector3(0.0, 1.06, 0.0))
+	_add_box_part(_torso, Vector3(0.1, 0.12, 0.06), pouch_mat, Vector3(-0.15, 0.95, -0.19))
+	_add_box_part(_torso, Vector3(0.1, 0.12, 0.06), pouch_mat, Vector3(0.15, 0.95, -0.19))
+	# Голова, балаклава, шлем.
+	_add_box_part(_torso, Vector3(0.26, 0.26, 0.26), skin_mat, Vector3(0.0, 1.5, 0.0))
+	_add_box_part(_torso, Vector3(0.275, 0.13, 0.275), mask_mat, Vector3(0.0, 1.58, 0.0))
+	_add_box_part(_torso, Vector3(0.3, 0.12, 0.3), helmet_mat, Vector3(0.0, 1.66, 0.0))
+	# Ноги (шарниры на бёдрах, y = 0.85).
+	_leg_l = _make_leg(pants_mat, Vector3(-0.13, 0.85, 0.0))
+	_leg_r = _make_leg(pants_mat, Vector3(0.13, 0.85, 0.0))
+	# Руки с оружием (шарнир на плечах, y = 1.32).
+	_arms = Node3D.new()
+	_arms.position = Vector3(0.0, SHOULDER_HEIGHT, 0.0)
+	_visual.add_child(_arms)
+	_add_box_part(_arms, Vector3(0.11, 0.11, 0.42), shirt_mat, Vector3(-0.18, -0.06, -0.2), Vector3(-8.0, 12.0, 0.0))
+	_add_box_part(_arms, Vector3(0.11, 0.11, 0.34), shirt_mat, Vector3(0.14, -0.1, -0.14), Vector3(-30.0, -10.0, 0.0))
+	_add_box_part(_arms, Vector3(0.07, 0.12, 0.5), gun_mat, Vector3(0.1, -0.08, -0.3))
+	var mag := MeshInstance3D.new()
+	var mag_box := BoxMesh.new()
+	mag_box.size = Vector3(0.05, 0.14, 0.09)
+	mag.mesh = mag_box
+	mag.material_override = gun_mat
+	mag.position = Vector3(0.1, -0.16, -0.22)
+	mag.rotation_degrees.x = -20.0
+	_arms.add_child(mag)
 
 	_muzzle = Node3D.new()
-	_muzzle.position = Vector3(0.18, 1.2, -0.6)
-	_visual.add_child(_muzzle)
+	_muzzle.position = Vector3(0.1, -0.06, -0.62)
+	_arms.add_child(_muzzle)
+
+
+func _make_leg(mat: StandardMaterial3D, hip_pos: Vector3) -> Node3D:
+	var leg := Node3D.new()
+	leg.position = hip_pos
+	_visual.add_child(leg)
+	var thigh := MeshInstance3D.new()
+	var thigh_mesh := BoxMesh.new()
+	thigh_mesh.size = Vector3(0.16, 0.45, 0.17)
+	thigh.mesh = thigh_mesh
+	thigh.material_override = mat
+	thigh.position = Vector3(0.0, -0.225, 0.0)
+	leg.add_child(thigh)
+	var boot := MeshInstance3D.new()
+	var boot_mesh := BoxMesh.new()
+	boot_mesh.size = Vector3(0.17, 0.14, 0.28)
+	boot.mesh = boot_mesh
+	boot.material_override = _make_mat(Color(0.1, 0.1, 0.1), 0.85, 0.0)
+	boot.position = Vector3(0.0, -0.5, -0.04)
+	leg.add_child(boot)
+	return leg
 
 
 func _make_mat(color: Color, roughness: float, metallic: float) -> StandardMaterial3D:
@@ -181,6 +253,28 @@ func _physics_process(delta: float) -> void:
 	_separate_from_bots()
 	velocity.y -= GRAVITY * delta
 	move_and_slide()
+	_animate_model(delta, speed)
+
+
+func _animate_model(delta: float, speed: float) -> void:
+	# Шаги: ноги качаются в противофазе, корпус слегка подпрыгивает.
+	var move_amount := Vector2(velocity.x, velocity.z).length()
+	if move_amount > 0.5:
+		_walk_phase += delta * move_amount * 2.4
+		_leg_l.rotation.x = sin(_walk_phase) * 0.55
+		_leg_r.rotation.x = sin(_walk_phase + PI) * 0.55
+		_torso.position.y = absf(sin(_walk_phase)) * 0.04
+	else:
+		_leg_l.rotation.x = lerpf(_leg_l.rotation.x, 0.0, minf(1.0, 10.0 * delta))
+		_leg_r.rotation.x = lerpf(_leg_r.rotation.x, 0.0, minf(1.0, 10.0 * delta))
+		_torso.position.y = lerpf(_torso.position.y, 0.0, minf(1.0, 10.0 * delta))
+	# В бою руки наводятся на игрока по вертикали.
+	if state == BotState.COMBAT and player != null and is_instance_valid(player):
+		var to_player := player.global_position + Vector3(0.0, 1.0, 0.0) - (global_position + Vector3(0.0, SHOULDER_HEIGHT, 0.0))
+		var pitch := atan2(to_player.y, Vector2(to_player.x, to_player.z).length())
+		_arms.rotation.x = lerpf(_arms.rotation.x, clampf(-pitch, deg_to_rad(-55.0), deg_to_rad(55.0)), minf(1.0, 8.0 * delta))
+	else:
+		_arms.rotation.x = lerpf(_arms.rotation.x, 0.0, minf(1.0, 8.0 * delta))
 
 
 func _update_perception(player_alive: bool) -> void:
@@ -189,7 +283,7 @@ func _update_perception(player_alive: bool) -> void:
 		return
 	var to_player := player.global_position - global_position
 	var dist := to_player.length()
-	if dist > VISION_DIST:
+	if dist > _vision_dist:
 		_visible_now = false
 	else:
 		var flat := Vector3(to_player.x, 0.0, to_player.z)
@@ -205,7 +299,7 @@ func _update_perception(player_alive: bool) -> void:
 			_unseen_time = 0.0
 			if state == BotState.PATROL or state == BotState.SEEK:
 				state = BotState.COMBAT
-				_react_timer = randf_range(REACTION_MIN, REACTION_MAX)
+				_react_timer = randf_range(_reaction_min, _reaction_max)
 				_burst_left = randi_range(3, 6)
 				_shot_timer = 0.0
 				_cooldown = 0.0
@@ -305,7 +399,7 @@ func _shoot_at_player(dist: float) -> void:
 	var aim_target := player.global_position + Vector3(0.0, 1.0, 0.0)
 	var aim := (aim_target - muzzle_pos).normalized()
 	var move_speed := Vector2(velocity.x, velocity.z).length()
-	var spread_deg := 1.6 + 2.4 * clampf(move_speed / CHASE_SPEED, 0.0, 1.0) + 0.035 * clampf(dist - 10.0, 0.0, 30.0)
+	var spread_deg := (1.6 + 2.4 * clampf(move_speed / CHASE_SPEED, 0.0, 1.0) + 0.035 * clampf(dist - 10.0, 0.0, 30.0)) * _spread_mult
 	var dir := FX.spread_direction(aim, deg_to_rad(spread_deg))
 	var to := muzzle_pos + dir * (dist + 6.0)
 	var exclude: Array[RID] = [get_rid()]
@@ -316,13 +410,14 @@ func _shoot_at_player(dist: float) -> void:
 		end = hit["position"]
 		var collider: Variant = hit.get("collider")
 		if collider == player:
-			var base_damage := randf_range(7.0, 12.0)
+			var base_damage := randf_range(7.0, 12.0) * _damage_mult
 			var falloff := clampf(1.25 - dist / 55.0, 0.6, 1.25)
 			player.take_damage(base_damage * falloff, bot_name)
 		else:
 			FX.spawn_impact(get_tree().current_scene, end, FX.normal_from(hit, Vector3.UP), Color(0.75, 0.68, 0.5))
 	FX.spawn_tracer(get_tree().current_scene, muzzle_pos, end, Color(1.0, 0.85, 0.4))
 	FX.spawn_muzzle_flash(get_tree().current_scene, muzzle_pos, false)
+	SfxManager.instance.play_at("ak_shot", muzzle_pos, -8.0)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +499,7 @@ func _separate_from_bots() -> void:
 # Внешние воздействия.
 # ---------------------------------------------------------------------------
 
-## Выстрел игрока рядом — бот идёт проверять источник звука.
+## Выстрел или взрыв рядом — бот идёт проверять источник звука.
 func hear_shot(from_pos: Vector3) -> void:
 	if state == BotState.DEAD or not ai_enabled:
 		return
@@ -446,7 +541,11 @@ func _die(src_weapon: String) -> void:
 		_death_tween.kill()
 	_death_tween = create_tween()
 	var fall_dir := 90.0 if randf() < 0.5 else -90.0
+	_death_tween.set_parallel(true)
 	_death_tween.tween_property(_visual, "rotation_degrees:x", fall_dir, 0.55).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_death_tween.tween_property(_visual, "position:y", -0.55, 0.55).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_death_tween.tween_property(_leg_l, "rotation:x", 0.3, 0.55)
+	_death_tween.tween_property(_leg_r, "rotation:x", -0.25, 0.55)
 	died.emit(self, src_weapon)
 
 
