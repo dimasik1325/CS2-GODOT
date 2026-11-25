@@ -11,7 +11,16 @@
 
 ---
 
-## 1. Быстрый запуск из исходников
+## 1. Быстрый запуск (Windows — в один клик через `.bat`)
+
+Просто дважды кликните по файлу **`run_game.bat`** в корне проекта! Скрипт сам пошагово:
+1. Проверит наличие **Python 3.10+** (если его нет — автоматически скачает и тихо установит Python 3.11.9 x64 через `winget` или `python.org`; если уже есть — **пропустит**).
+2. Проверит виртуальное окружение **`.venv`** (если уже создано — **пропустит**).
+3. Проверит все библиотеки из `requirements.txt` (`Ursina`, `Panda3D`, `glTF`, `Pygame`, `NumPy`, `Pillow`) по контрольной сумме и импорту (если уже стоят — **мгновенно пропустит** без обращения к сети; если чего-то нет — докачает).
+4. Проверит наличие 3D-моделей `.glb`, текстур `.png` и звуков `.wav` в `assets/` (при необходимости сгенерирует недостающие).
+5. **Запустит игру** (`main.py`).
+
+### Ручной запуск через терминал (Windows / Linux / macOS)
 
 Требуется **Python 3.11+** (Windows 10/11, Linux или macOS).
 
@@ -41,14 +50,17 @@ python main.py
 
 ## 2. Сборка в один `.exe` (Windows)
 
-В проекте уже настроен `sys._MEIPASS` (в `src/settings.py`) и подготовлен файл спецификации `build.spec`, который корректно упаковывает шейдеры, модели и OpenGL/OpenAL-библиотеки Panda3D + Ursina + `panda3d-gltf`.
+В проекте уже настроен `sys._MEIPASS` (в `src/settings.py`), подготовлен файл `build.spec` и одно-кликовый сборщик **`build_exe.bat`**.
 
-### Способ А — Рекомендуемый (через `build.spec`)
+### Способ А — В один клик через `build_exe.bat`
+Дважды кликните по **`build_exe.bat`** — он проверит/докачает окружение и PyInstaller (пропустив уже установленное) и соберёт `dist\cs2_clone.exe`.
+
+### Способ Б — Через `build.spec` из терминала
 ```powershell
 pyinstaller --clean -y build.spec
 ```
 
-### Способ Б — Одной командой PyInstaller из терминала (Windows)
+### Способ В — Одной командой PyInstaller из терминала (Windows)
 ```powershell
 pyinstaller --onefile --windowed --name cs2_clone --add-data "assets;assets" --collect-all ursina --collect-all panda3d --collect-all gltf --collect-all simplepbr main.py
 ```
