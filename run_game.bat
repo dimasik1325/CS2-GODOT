@@ -91,13 +91,13 @@ echo.
 :: --------------------------------------------------------------
 echo [3/3] Проверка игровых ассетов в папке assets/...
 if not exist "assets\models\ak47.glb" goto :gen_assets
-if not exist "assets\models\m4a1.glb" goto :gen_assets
-if not exist "assets\models\deagle.glb" goto :gen_assets
-if not exist "assets\models\knife.glb" goto :gen_assets
+if not exist "assets\models\awp.glb" goto :gen_assets
+if not exist "assets\models\c4.glb" goto :gen_assets
+if not exist "assets\models\barrel.glb" goto :gen_assets
 if not exist "assets\models\enemy.glb" goto :gen_assets
 if not exist "assets\models\crate.glb" goto :gen_assets
-if not exist "assets\textures\wall_sandstone.png" goto :gen_assets
-if not exist "assets\sounds\ak47_shoot.wav" goto :gen_assets
+if not exist "assets\textures\wall_brick.png" goto :gen_assets
+if not exist "assets\sounds\awp_shoot.wav" goto :gen_assets
 
 echo   [ПРОПУСК] Все 3D-модели (.glb), текстуры (.png) и звуки (.wav) уже на месте.
 goto :launch_game

@@ -1,8 +1,9 @@
 """
-Система экранов меню игры:
-1) Главное меню (Play / Settings / Quit, фоновый арт menu_bg.png, фоновая музыка, подсказка управления)
-2) Меню паузы по клавише Esc (Resume / Settings / Restart Match / Main Menu / Quit)
-3) Окно настроек (ползунки чувствительности мыши, громкости звука и количества ботов)
+Система экранов меню игры (CS2 Tactical Realism Edition):
+1) Главное меню с живой панорамой 3D-арены на фоне, музыкой и карточкой всех новых клавиш
+2) Меню паузы по клавише Esc
+3) Расширенное окно настроек: Полноэкранный режим (Fullscreen F11), Время суток (Day/Sunset/Night F6),
+   Сложность ИИ (Easy/Normal/Hard), Тени 3D, FOV, Чувствительность мыши, Громкость и Количество ботов
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from ursina import Button, Entity, Slider, Text, application, camera, color, mou
 from src.settings import (
     GameSettings,
     SoundManager,
+    apply_fullscreen_mode,
     load_safe_texture,
     resolve_font_path,
     rgb32,
@@ -22,7 +24,7 @@ from src.settings import (
 
 
 class MenuManager:
-    """Управляет Главным меню, Меню паузы и Окном настроек."""
+    """Управляет Главным меню, Меню паузы и Расширенным окном настроек."""
 
     def __init__(
         self,
@@ -43,243 +45,199 @@ class MenuManager:
         self.on_settings_applied = on_settings_applied
 
         self._font = resolve_font_path("assets/fonts/hud_font.ttf")
-        self._settings_return_target: str = "main"  # 'main' | 'pause'
+        self._settings_return_target: str = "main"
 
-        # ── 1. ГЛАВНОЕ МЕНЮ ──
+        # ── 1. ГЛАВНОЕ МЕНЮ (С ЖИВЫМ 3D-ОБЛЁТОМ КАРТЫ НА ФОНЕ!) ──
         self.main_panel = Entity(parent=camera.ui, enabled=False)
         bg_tex = load_safe_texture("assets/textures/menu_bg.png")
         Entity(
             parent=self.main_panel,
             model="quad",
             texture=bg_tex,
-            scale=(1.95, 1.12),
+            scale=(2.0, 1.15),
             z=0.08,
-            color=color.white if bg_tex is not None else rgb32(22, 28, 38),
+            color=rgba32(255, 255, 255, 135) if bg_tex is not None else rgba32(14, 20, 30, 150),
         )
-        # Левая затемнённая колонка в стиле главного экрана CS2
         Entity(
             parent=self.main_panel,
             model="quad",
-            position=(-0.44, 0.0, 0.05),
-            scale=(0.68, 1.12),
-            color=rgba32(10, 14, 22, 222),
+            position=(-0.47, 0.0, 0.05),
+            scale=(0.66, 1.15),
+            color=rgba32(10, 14, 22, 232),
         )
 
         self._create_label(
             self.main_panel,
             "COUNTER-STRIKE 2",
-            pos=(-0.44, 0.34, 0.02),
-            scale=1.85,
+            pos=(-0.47, 0.36, 0.02),
+            scale=1.78,
             col=rgb32(245, 166, 35),
         )
         self._create_label(
             self.main_panel,
-            "PYTHON 3.11  •  URSINA 3D TACTICAL OPS",
-            pos=(-0.44, 0.275, 0.02),
-            scale=0.72,
-            col=rgb32(185, 198, 218),
+            "3D REALISM  •  100+ TACTICAL FEATURES EDITION",
+            pos=(-0.47, 0.295, 0.02),
+            scale=0.64,
+            col=rgb32(185, 205, 230),
         )
 
         self._create_button(
             self.main_panel,
-            "PLAY  /  ИГРАТЬ",
-            pos=(-0.44, 0.11, 0.01),
+            "PLAY  /  НАЧАТЬ БОЙ",
+            pos=(-0.47, 0.14, 0.01),
             accent=rgb32(228, 138, 28),
             on_click=self._handle_play_clicked,
         )
         self._create_button(
             self.main_panel,
             "SETTINGS  /  НАСТРОЙКИ",
-            pos=(-0.44, -0.01, 0.01),
-            accent=rgb32(36, 46, 62),
+            pos=(-0.47, 0.03, 0.01),
+            accent=rgb32(36, 48, 66),
             on_click=lambda: self.open_settings("main"),
+        )
+        self._main_sky_btn = self._create_button(
+            self.main_panel,
+            f"SKY: {self.settings.time_of_day}  (F6)",
+            pos=(-0.47, -0.08, 0.01),
+            accent=rgb32(44, 68, 96),
+            on_click=self._toggle_sky_clicked,
+        )
+        self._main_fs_btn = self._create_button(
+            self.main_panel,
+            self._fs_label(),
+            pos=(-0.47, -0.19, 0.01),
+            accent=rgb32(42, 78, 68),
+            on_click=self._toggle_fullscreen_clicked,
         )
         self._create_button(
             self.main_panel,
             "QUIT  /  ВЫХОД",
-            pos=(-0.44, -0.13, 0.01),
+            pos=(-0.47, -0.30, 0.01),
             accent=rgb32(138, 38, 38),
             on_click=self._handle_quit,
         )
 
-        # Информационная карточка управления справа
+        # Карточка полного тактического управления справа
         Entity(
             parent=self.main_panel,
             model="quad",
-            position=(0.30, -0.02, 0.05),
-            scale=(0.62, 0.62),
-            color=rgba32(12, 16, 24, 205),
+            position=(0.28, -0.01, 0.05),
+            scale=(0.74, 0.78),
+            color=rgba32(10, 15, 24, 212),
         )
         self._create_label(
             self.main_panel,
-            "УПРАВЛЕНИЕ  /  CONTROLS",
-            pos=(0.30, 0.22, 0.02),
-            scale=1.02,
+            "УПРАВЛЕНИЕ И НОВЫЕ ВОЗМОЖНОСТИ",
+            pos=(0.28, 0.31, 0.02),
+            scale=0.95,
             col=rgb32(245, 185, 65),
         )
         controls_lines = (
-            "WASD — Передвижение\n"
-            "Left Shift — Быстрый бег\n"
-            "Left Ctrl — Тактический присед (+точность)\n"
-            "Space — Прыжок\n"
-            "ЛКМ — Стрельба / Очередь / Удар ножом\n"
-            "R — Перезарядка магазина\n"
-            "1 / 2 / 3 / 4 (или колесо) — AK-47 / Deagle / Нож / M4A1-S\n"
-            "Esc — Пауза и настройки в бою"
+            "WASD — Движение  |  Shift — Спринт  |  Shift+Ctrl — ПОДКАТ!\n"
+            "Q / E — Выглянуть из-за угла (Lean)  |  E у бомбы — Разминировать C4\n"
+            "ЛКМ — Огонь  |  ПКМ — Прицел AWP / Режим Burst / Удар ножом в спину\n"
+            "1 / 2 / 3 — Винтовка / Пистолет / Керамбит  |  6,7,8,9,0 — AWP, MP9, Дробовик, FAMAS, USP\n"
+            "B — Меню закупки CS2 ($)  |  Tab — Таблица счёта и точности\n"
+            "G — Бросить гранату (HE / Flash / Smoke / Molotov)  |  V — Сменить гранату\n"
+            "F — Осмотр оружия в 3D  |  T — 3D Фонарь  |  X — Стимулятор +35 HP  |  Z — 3D Пинг\n"
+            "F6 — День/Закат/Ночь  |  F7 — Цвет прицела  |  F11 — Полный экран  |  Esc — Пауза"
         )
         self._create_label(
             self.main_panel,
             controls_lines,
-            pos=(0.30, -0.04, 0.02),
-            scale=0.72,
-            col=rgb32(218, 226, 238),
+            pos=(0.28, -0.04, 0.02),
+            scale=0.58,
+            col=rgb32(220, 230, 244),
         )
 
         # ── 2. МЕНЮ ПАУЗЫ (ESC) ──
         self.pause_panel = Entity(parent=camera.ui, enabled=False)
-        Entity(
-            parent=self.pause_panel,
-            model="quad",
-            scale=(2.1, 1.2),
-            z=0.06,
-            color=rgba32(8, 12, 18, 195),
-        )
-        Entity(
-            parent=self.pause_panel,
-            model="quad",
-            position=(0.0, 0.0, 0.04),
-            scale=(0.56, 0.72),
-            color=rgba32(16, 22, 32, 238),
-        )
-        self._create_label(
-            self.pause_panel,
-            "PAUSED  /  ПАУЗА",
-            pos=(0.0, 0.27, 0.01),
-            scale=1.45,
-            col=rgb32(245, 175, 50),
-        )
-        self._create_button(
-            self.pause_panel,
-            "RESUME  (ESC)",
-            pos=(0.0, 0.14, 0.01),
-            accent=rgb32(46, 122, 195),
-            on_click=self._handle_resume_clicked,
-        )
-        self._create_button(
-            self.pause_panel,
-            "SETTINGS  /  НАСТРОЙКИ",
-            pos=(0.0, 0.03, 0.01),
-            accent=rgb32(38, 48, 64),
-            on_click=lambda: self.open_settings("pause"),
-        )
-        self._create_button(
-            self.pause_panel,
-            "RESTART MATCH  /  ЗАНОВО",
-            pos=(0.0, -0.08, 0.01),
-            accent=rgb32(38, 48, 64),
-            on_click=self._handle_restart_clicked,
-        )
-        self._create_button(
-            self.pause_panel,
-            "MAIN MENU  /  В МЕНЮ",
-            pos=(0.0, -0.19, 0.01),
-            accent=rgb32(92, 68, 32),
-            on_click=self._handle_main_menu_clicked,
-        )
-        self._create_button(
-            self.pause_panel,
-            "QUIT  /  ВЫХОД",
-            pos=(0.0, -0.30, 0.01),
-            accent=rgb32(138, 38, 38),
-            on_click=self._handle_quit,
-        )
+        Entity(parent=self.pause_panel, model="quad", scale=(2.2, 1.3), z=0.06, color=rgba32(8, 12, 18, 198))
+        Entity(parent=self.pause_panel, model="quad", position=(0.0, 0.0, 0.04), scale=(0.58, 0.76), color=rgba32(16, 22, 32, 240))
+        self._create_label(self.pause_panel, "PAUSED  /  ПАУЗА", pos=(0.0, 0.29, 0.01), scale=1.42, col=rgb32(245, 175, 50))
+        self._create_button(self.pause_panel, "RESUME  (ESC)", pos=(0.0, 0.16, 0.01), accent=rgb32(46, 122, 195), on_click=self._handle_resume_clicked)
+        self._create_button(self.pause_panel, "SETTINGS  /  НАСТРОЙКИ", pos=(0.0, 0.05, 0.01), accent=rgb32(38, 48, 64), on_click=lambda: self.open_settings("pause"))
+        self._create_button(self.pause_panel, "RESTART MATCH  /  ЗАНОВО", pos=(0.0, -0.06, 0.01), accent=rgb32(38, 48, 64), on_click=self._handle_restart_clicked)
+        self._create_button(self.pause_panel, "MAIN MENU  /  В МЕНЮ", pos=(0.0, -0.17, 0.01), accent=rgb32(92, 68, 32), on_click=self._handle_main_menu_clicked)
+        self._create_button(self.pause_panel, "QUIT  /  ВЫХОД", pos=(0.0, -0.28, 0.01), accent=rgb32(138, 38, 38), on_click=self._handle_quit)
 
-        # ── 3. ПАНЕЛЬ НАСТРОЕК (МЫШЬ, ГРОМКОСТЬ, ЧИСЛО БОТОВ) ──
+        # ── 3. РАСШИРЕННАЯ ПАНЕЛЬ НАСТРОЕК ──
         self.settings_panel = Entity(parent=camera.ui, enabled=False)
-        Entity(
-            parent=self.settings_panel,
-            model="quad",
-            scale=(2.1, 1.2),
-            z=0.07,
-            color=rgba32(8, 12, 18, 225),
-        )
-        Entity(
-            parent=self.settings_panel,
-            model="quad",
-            position=(0.0, 0.0, 0.05),
-            scale=(0.86, 0.72),
-            color=rgba32(16, 22, 34, 242),
-        )
-        self._create_label(
-            self.settings_panel,
-            "SETTINGS  /  НАСТРОЙКИ",
-            pos=(0.0, 0.27, 0.01),
-            scale=1.40,
-            col=rgb32(245, 175, 50),
-        )
+        Entity(parent=self.settings_panel, model="quad", scale=(2.2, 1.3), z=0.07, color=rgba32(8, 12, 18, 228))
+        Entity(parent=self.settings_panel, model="quad", position=(0.0, 0.0, 0.05), scale=(1.04, 0.84), color=rgba32(16, 22, 34, 244))
+        self._create_label(self.settings_panel, "SETTINGS  /  НАСТРОЙКИ 3D И ИГРЫ", pos=(0.0, 0.34, 0.01), scale=1.28, col=rgb32(245, 175, 50))
 
-        # Ползунок чувствительности мыши
-        self._create_label(
-            self.settings_panel,
-            "Mouse Sensitivity (Чувствительность мыши):",
-            pos=(0.0, 0.165, 0.01),
-            scale=0.78,
-            col=rgb32(210, 220, 235),
-        )
-        self.sens_slider = Slider(
-            min=10,
-            max=120,
-            default=round(self.settings.mouse_sensitivity, 1),
-            dynamic=True,
-            parent=self.settings_panel,
-            position=(-0.26, 0.115, 0.01),
-        )
+        # Левая колонка ползунков
+        self._create_label(self.settings_panel, "Mouse Sensitivity (Чувствительность):", pos=(-0.24, 0.23, 0.01), scale=0.68, col=rgb32(210, 220, 235))
+        self.sens_slider = Slider(min=10, max=120, default=round(self.settings.mouse_sensitivity, 1), dynamic=True, parent=self.settings_panel, position=(-0.46, 0.185, 0.01), scale=0.85)
         self.sens_slider.on_value_changed = self._on_slider_changed
 
-        # Ползунок общей громкости
-        self._create_label(
-            self.settings_panel,
-            "Master Volume (Громкость звука и музыки):",
-            pos=(0.0, 0.035, 0.01),
-            scale=0.78,
-            col=rgb32(210, 220, 235),
-        )
-        self.vol_slider = Slider(
-            min=0.0,
-            max=1.0,
-            default=round(self.settings.master_volume, 2),
-            dynamic=True,
-            parent=self.settings_panel,
-            position=(-0.26, -0.015, 0.01),
-        )
+        self._create_label(self.settings_panel, "Master Volume (Общая громкость):", pos=(-0.24, 0.11, 0.01), scale=0.68, col=rgb32(210, 220, 235))
+        self.vol_slider = Slider(min=0.0, max=1.0, default=round(self.settings.master_volume, 2), dynamic=True, parent=self.settings_panel, position=(-0.46, 0.065, 0.01), scale=0.85)
         self.vol_slider.on_value_changed = self._on_slider_changed
 
-        # Ползунок количества врагов в раунде
-        self._create_label(
-            self.settings_panel,
-            "Bots per Round (Количество врагов в раунде):",
-            pos=(0.0, -0.095, 0.01),
-            scale=0.78,
-            col=rgb32(210, 220, 235),
-        )
-        self.bots_slider = Slider(
-            min=2,
-            max=8,
-            default=int(self.settings.bot_count),
-            step=1,
-            dynamic=True,
-            parent=self.settings_panel,
-            position=(-0.26, -0.145, 0.01),
-        )
+        self._create_label(self.settings_panel, "Bots per Round (Ботов в раунде):", pos=(-0.24, -0.01, 0.01), scale=0.68, col=rgb32(210, 220, 235))
+        self.bots_slider = Slider(min=2, max=10, default=int(self.settings.bot_count), step=1, dynamic=True, parent=self.settings_panel, position=(-0.46, -0.055, 0.01), scale=0.85)
         self.bots_slider.on_value_changed = self._on_slider_changed
+
+        self._create_label(self.settings_panel, "Field of View / Угол обзора (FOV):", pos=(-0.24, -0.13, 0.01), scale=0.68, col=rgb32(210, 220, 235))
+        self.fov_slider = Slider(min=78, max=110, default=int(self.settings.fov), step=1, dynamic=True, parent=self.settings_panel, position=(-0.46, -0.175, 0.01), scale=0.85)
+        self.fov_slider.on_value_changed = self._on_slider_changed
+
+        # Правая колонка переключателей 3D-графики, полного экрана и сложности
+        self.fs_btn = self._create_button(self.settings_panel, self._fs_label(), pos=(0.25, 0.19, 0.01), accent=rgb32(42, 82, 72), on_click=self._toggle_fullscreen_clicked)
+        self.shadows_btn = self._create_button(self.settings_panel, self._shadows_label(), pos=(0.25, 0.08, 0.01), accent=rgb32(46, 66, 95), on_click=self._toggle_shadows_clicked)
+        self.tod_btn = self._create_button(self.settings_panel, f"TIME OF DAY: {self.settings.time_of_day}", pos=(0.25, -0.03, 0.01), accent=rgb32(82, 64, 104), on_click=self._toggle_sky_clicked)
+        self.diff_btn = self._create_button(self.settings_panel, f"BOT AI: {self.settings.bot_difficulty}", pos=(0.25, -0.14, 0.01), accent=rgb32(96, 58, 44), on_click=self._toggle_difficulty_clicked)
 
         self._create_button(
             self.settings_panel,
             "SAVE & BACK  /  СОХРАНИТЬ",
-            pos=(0.0, -0.265, 0.01),
+            pos=(0.0, -0.31, 0.01),
             accent=rgb32(228, 138, 28),
             on_click=self.close_settings,
         )
+
+    def _fs_label(self) -> str:
+        return "FULLSCREEN: ON (F11)" if self.settings.fullscreen else "FULLSCREEN: OFF (F11)"
+
+    def _shadows_label(self) -> str:
+        return "3D SHADOWS: ON" if self.settings.shadows_enabled else "3D SHADOWS: OFF"
+
+    def refresh_toggle_labels(self) -> None:
+        for b in (self.fs_btn, self._main_fs_btn):
+            b.text = self._fs_label()
+        self.shadows_btn.text = self._shadows_label()
+        self.tod_btn.text = f"TIME OF DAY: {self.settings.time_of_day}"
+        self._main_sky_btn.text = f"SKY: {self.settings.time_of_day}  (F6)"
+        self.diff_btn.text = f"BOT AI: {self.settings.bot_difficulty}"
+
+    def _toggle_fullscreen_clicked(self) -> None:
+        self.settings.fullscreen = not self.settings.fullscreen
+        apply_fullscreen_mode(self.settings.fullscreen)
+        self.refresh_toggle_labels()
+        self.settings.save()
+        self.sound_mgr.play_sfx("empty_click", volume=0.55)
+
+    def _toggle_shadows_clicked(self) -> None:
+        self.settings.shadows_enabled = not self.settings.shadows_enabled
+        self.refresh_toggle_labels()
+        self.on_settings_applied()
+        self.sound_mgr.play_sfx("empty_click", volume=0.55)
+
+    def _toggle_sky_clicked(self) -> None:
+        order = ("DAY", "SUNSET", "NIGHT")
+        self.settings.time_of_day = order[(order.index(self.settings.time_of_day) + 1) % len(order)]
+        self.refresh_toggle_labels()
+        self.on_settings_applied()
+        self.sound_mgr.play_sfx("empty_click", volume=0.55)
+
+    def _toggle_difficulty_clicked(self) -> None:
+        order = ("EASY", "NORMAL", "HARD")
+        self.settings.bot_difficulty = order[(order.index(self.settings.bot_difficulty) + 1) % len(order)]
+        self.refresh_toggle_labels()
+        self.on_settings_applied()
+        self.sound_mgr.play_sfx("empty_click", volume=0.55)
 
     def _create_label(
         self,
@@ -316,7 +274,7 @@ class MenuManager:
             parent=parent_ent,
             text=title,
             position=pos,
-            scale=(0.44, 0.078),
+            scale=(0.43, 0.075),
             color=accent,
             highlight_color=accent.tint(0.18),
             pressed_color=accent.tint(-0.15),
@@ -327,12 +285,13 @@ class MenuManager:
                 btn.text_entity.font = self._font
             except Exception:
                 pass
-            btn.text_entity.scale *= 0.88
+            btn.text_entity.scale *= 0.80
         return btn
 
     def show_main_menu(self) -> None:
         self.pause_panel.enabled = False
         self.settings_panel.enabled = False
+        self.refresh_toggle_labels()
         self.main_panel.enabled = True
         mouse.locked = False
         mouse.visible = True
@@ -358,12 +317,15 @@ class MenuManager:
         self.sens_slider.value = float(self.settings.mouse_sensitivity)
         self.vol_slider.value = float(self.settings.master_volume)
         self.bots_slider.value = int(self.settings.bot_count)
+        self.fov_slider.value = int(self.settings.fov)
+        self.refresh_toggle_labels()
         self.settings_panel.enabled = True
 
     def _on_slider_changed(self) -> None:
         self.settings.mouse_sensitivity = float(self.sens_slider.value)
         self.settings.master_volume = float(self.vol_slider.value)
         self.settings.bot_count = int(round(self.bots_slider.value))
+        self.settings.fov = float(self.fov_slider.value)
         self.sound_mgr.set_master_volume(self.settings.master_volume)
         self.on_settings_applied()
 

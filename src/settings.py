@@ -1,19 +1,29 @@
 """
-Конфигурация игры, характеристики оружия, менеджер настроек,
-безопасные загрузчики ассетов (.glb/.gltf/.obj, .png/.jpg, .wav/.ogg/.mp3, .ttf)
-и поддержка упаковки в единый .exe через PyInstaller (sys._MEIPASS).
+Конфигурация игры, полноэкранный режим Windows/Linux (DPI-aware),
+PBR-материалы Panda3D, характеристики 10 видов оружия и 4 видов гранат CS2,
+менеджер настроек, звуковой движок и безопасные загрузчики ассетов (.glb/.png/.wav/.ttf).
 """
 
 from __future__ import annotations
 
+import ctypes
 import json
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from panda3d.core import Filename, FontPool, LPoint3f, NodePath, getModelPath
-from ursina import Audio, Texture, application, color
+from panda3d.core import (
+    Filename,
+    FontPool,
+    LPoint3f,
+    Material,
+    NodePath,
+    SamplerState,
+    WindowProperties,
+    getModelPath,
+)
+from ursina import Audio, Entity, Texture, Vec2, application, color
 
 try:
     import gltf
@@ -26,11 +36,91 @@ except ImportError:  # pragma: no cover
     pygame = None
 
 
+def enable_windows_dpi_awareness() -> None:
+    """Отключает размытие и сдвиг полноэкранного окна при масштабировании 125%/150% в Windows."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def get_native_screen_size() -> tuple[int, int]:
+    """Определяет реальное разрешение основного монитора (Windows API / screeninfo / Panda3D)."""
+    if sys.platform == "win32":
+        try:
+            w = int(ctypes.windll.user32.GetSystemMetrics(0))
+            h = int(ctypes.windll.user32.GetSystemMetrics(1))
+            if w >= 640 and h >= 480:
+                return w, h
+        except Exception:
+            pass
+
+    try:
+        from ursina import window
+
+        mon = getattr(window, "main_monitor", None)
+        if mon is not None and getattr(mon, "width", 0) >= 640:
+            return int(mon.width), int(mon.height)
+    except Exception:
+        pass
+
+    try:
+        if application.base and getattr(application.base, "pipe", None) is not None:
+            w = int(application.base.pipe.getDisplayWidth())
+            h = int(application.base.pipe.getDisplayHeight())
+            if w >= 640 and h >= 480:
+                return w, h
+    except Exception:
+        pass
+
+    return 1920, 1080
+
+
+def apply_fullscreen_mode(enable: bool) -> None:
+    """
+    Переключает игру между настоящим полноэкранным режимом на весь монитор
+    и оконным режимом 1280x720 без падений в Ursina 7.x и Ursina 8.x.
+    """
+    from ursina import window
+
+    window._fullscreen = bool(enable)
+    if getattr(application, "window_type", None) == "none":
+        return
+    if not application.base or getattr(application.base, "win", None) is None:
+        return
+
+    mon_w, mon_h = get_native_screen_size()
+    wp = WindowProperties()
+    if enable:
+        mon = getattr(window, "main_monitor", None)
+        origin_x = int(getattr(mon, "x", 0)) if mon is not None else 0
+        origin_y = int(getattr(mon, "y", 0)) if mon is not None else 0
+        wp.setUndecorated(True)
+        wp.setOrigin(origin_x, origin_y)
+        wp.setSize(mon_w, mon_h)
+    else:
+        win_w = min(1280, max(960, int(mon_w * 0.80)))
+        win_h = min(720, max(540, int(mon_h * 0.80)))
+        pos_x = max(20, (mon_w - win_w) // 2)
+        pos_y = max(20, (mon_h - win_h) // 2)
+        wp.setUndecorated(False)
+        wp.setFullscreen(False)
+        wp.setSize(win_w, win_h)
+        wp.setOrigin(pos_x, pos_y)
+
+    try:
+        application.base.win.requestProperties(wp)
+    except Exception:
+        pass
+
+
 def get_resource_root() -> Path:
-    """
-    Возвращает корневую папку ресурсов.
-    При запуске собранного PyInstaller --onefile берёт временную директорию sys._MEIPASS.
-    """
+    """Возвращает корневую папку ресурсов (включая sys._MEIPASS для PyInstaller .exe)."""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(getattr(sys, "_MEIPASS")).resolve()
     return Path(__file__).resolve().parent.parent
@@ -47,9 +137,9 @@ RESOURCE_ROOT: Path = get_resource_root()
 ASSETS_DIR: Path = RESOURCE_ROOT / "assets"
 SETTINGS_FILE: Path = get_writable_dir() / "user_settings.json"
 
-# Кэш загруженных GLB NodePath, чтобы не парсить диск повторно и не терять PBR-текстуры
 _GLB_CACHE: dict[str, NodePath] = {}
 _TEX_CACHE: dict[str, Texture | None] = {}
+_MAT_CACHE: dict[str, Material] = {}
 
 
 def rgb32(r: float, g: float, b: float) -> Any:
@@ -62,10 +152,55 @@ def rgba32(r: float, g: float, b: float, a: float = 255.0) -> Any:
     return color.Color(r / 255.0, g / 255.0, b / 255.0, a / 255.0)
 
 
+CROSSHAIR_PALETTE: tuple[tuple[str, tuple[int, int, int]], ...] = (
+    ("GREEN", (65, 255, 130)),
+    ("CYAN", (65, 235, 255)),
+    ("YELLOW", (255, 235, 65)),
+    ("WHITE", (250, 250, 250)),
+    ("ORANGE", (255, 155, 45)),
+    ("PINK", (255, 95, 215)),
+)
+
+
+def get_pbr_material(preset: str = "stone") -> Material:
+    """Возвращает кэшированный Panda3D Material с бликами Specular/Shininess для 3D-реализма."""
+    if preset in _MAT_CACHE:
+        return _MAT_CACHE[preset]
+
+    mat = Material(f"cs2_mat_{preset}")
+    presets: dict[str, tuple[float, tuple[float, float, float, float]]] = {
+        "stone": (14.0, (0.12, 0.11, 0.09, 1.0)),
+        "sand": (8.0, (0.07, 0.06, 0.05, 1.0)),
+        "wood": (18.0, (0.16, 0.13, 0.09, 1.0)),
+        "asphalt": (16.0, (0.14, 0.14, 0.15, 1.0)),
+        "metal": (58.0, (0.58, 0.62, 0.68, 1.0)),
+        "steel": (72.0, (0.72, 0.76, 0.82, 1.0)),
+        "chrome": (96.0, (0.92, 0.95, 0.98, 1.0)),
+        "gold": (88.0, (0.95, 0.78, 0.32, 1.0)),
+        "polymer": (32.0, (0.28, 0.30, 0.32, 1.0)),
+        "fabric": (9.0, (0.08, 0.08, 0.08, 1.0)),
+        "foliage": (12.0, (0.10, 0.14, 0.08, 1.0)),
+        "glass": (110.0, (0.95, 0.98, 1.0, 1.0)),
+    }
+    shininess, spec = presets.get(preset, presets["stone"])
+    mat.setShininess(shininess)
+    mat.setSpecular(spec)
+    _MAT_CACHE[preset] = mat
+    return mat
+
+
+def apply_pbr_material(entity: Entity | NodePath, preset: str = "stone") -> None:
+    """Применяет бликовый 3D-материал к объекту Ursina/Panda3D."""
+    try:
+        entity.setMaterial(get_pbr_material(preset), 1)
+    except Exception:
+        pass
+
+
 def configure_ursina_asset_folder() -> None:
     """
     Настраивает пути ресурсов Ursina/Panda3D, защищает Text.font от бага Ursina 8.x
-    на Windows (NoneType.parent / обратные слеши / кириллица в путях) и mouse/camera без окна.
+    на Windows и защищает mouse/camera при работе без окна.
     """
     application.asset_folder = RESOURCE_ROOT
     fonts_dir = ASSETS_DIR / "fonts"
@@ -81,7 +216,6 @@ def configure_ursina_asset_folder() -> None:
     if not hasattr(camera, "_clip_plane_near"):
         camera._clip_plane_near = 0.05
 
-    # Патч безопасной загрузки шрифтов Text.font для Ursina 7.x и Ursina 8.x на Windows
     if not getattr(Text, "_cs2_font_patched", False):
 
         def _safe_font_getter(self: Any) -> Any:
@@ -165,15 +299,10 @@ def configure_ursina_asset_folder() -> None:
 
 
 def resource_path(relative_path: str | Path) -> Path:
-    """Преобразует относительный путь ('assets/models/ak47.glb') в абсолютный Path."""
     return RESOURCE_ROOT / Path(relative_path)
 
 
 def resolve_font_path(relative_path: str = "assets/fonts/hud_font.ttf") -> str | None:
-    """
-    Проверяет наличие .ttf шрифта и возвращает его имя (совместимо с Ursina 7.x и 8.x).
-    Если шрифт не найден — возвращает None (Ursina использует встроенный шрифт).
-    """
     full_path = resource_path(relative_path)
     if full_path.is_file():
         getModelPath().append_path(Filename.fromOsSpecific(str(full_path.parent.resolve())))
@@ -187,10 +316,7 @@ def resolve_font_path(relative_path: str = "assets/fonts/hud_font.ttf") -> str |
 
 
 def load_safe_texture(relative_path: str) -> Texture | None:
-    """
-    Безопасно загружает текстуру (.png, .jpg, .dds).
-    Если точный файл не найден, пробует альтернативные расширения; иначе возвращает None.
-    """
+    """Безопасно загружает текстуру с анизотропной фильтрацией 8x для чётких стен под углом."""
     if relative_path in _TEX_CACHE:
         return _TEX_CACHE[relative_path]
 
@@ -204,6 +330,12 @@ def load_safe_texture(relative_path: str) -> Texture | None:
         if file_path.is_file():
             try:
                 tex = Texture(file_path.resolve())
+                raw_tex = getattr(tex, "_texture", None)
+                if raw_tex is not None:
+                    raw_tex.setAnisotropicDegree(8)
+                    raw_tex.setMinfilter(SamplerState.FT_linear_mipmap_linear)
+                    raw_tex.setMagfilter(SamplerState.FT_linear)
+                    raw_tex.generateRamMipmapImages()
                 _TEX_CACHE[relative_path] = tex
                 return tex
             except Exception as exc:
@@ -218,13 +350,7 @@ def load_safe_model(
     target_max_extent: float | None = None,
     align_bottom_zero: bool = False,
 ) -> NodePath | None:
-    """
-    Безопасно загружает 3D-модель (.glb, .gltf, .obj, .fbx).
-    - Сохраняет встроенные материалы и вертексные цвета (обходит баг clearTexture в Ursina).
-    - При необходимости автоматически нормализует масштаб сторонних моделей с Sketchfab
-      (например, экспортированных в сантиметрах вместо метров).
-    - При отсутствии файла возвращает None, чтобы вызывающий код включил fallback на примитивы.
-    """
+    """Безопасно загружает 3D-модель (.glb/.gltf/.obj/.fbx) с кэшированием и нормализацией масштаба."""
     cache_key = f"{relative_path}|{target_max_extent}|{align_bottom_zero}"
     if cache_key in _GLB_CACHE:
         cached_template = _GLB_CACHE[cache_key]
@@ -258,7 +384,6 @@ def load_safe_model(
                 return None
             loaded_np = loaded_raw if isinstance(loaded_raw, NodePath) else NodePath(loaded_raw)
 
-        # Создаём корневой контейнер для нормализации масштаба/пивота сторонних ассетов
         wrapper = NodePath(f"template_{found_file.stem}")
         loaded_np.reparentTo(wrapper)
 
@@ -269,7 +394,6 @@ def load_safe_model(
             max_dim = max(float(dims.x), float(dims.y), float(dims.z), 1e-5)
 
             if target_max_extent is not None:
-                # Если модель сильно отличается по масштабу (например FBX/Sketchfab в см или мм)
                 if max_dim > target_max_extent * 2.2 or max_dim < target_max_extent * 0.35:
                     scale_factor = target_max_extent / max_dim
                     loaded_np.setScale(scale_factor)
@@ -293,14 +417,20 @@ def load_safe_model(
 
 @dataclass
 class GameSettings:
-    """Пользовательские настройки игры с сохранением на диск."""
+    """Расширенные пользовательские настройки игры с сохранением на диск."""
 
+    fullscreen: bool = True
+    shadows_enabled: bool = True
+    time_of_day: str = "DAY"           # DAY | SUNSET | NIGHT
+    bot_difficulty: str = "NORMAL"     # EASY | NORMAL | HARD
+    crosshair_color_idx: int = 0
+    show_damage_numbers: bool = True
     mouse_sensitivity: float = 45.0
-    master_volume: float = 0.65
-    fov: float = 90.0
+    master_volume: float = 0.68
+    fov: float = 92.0
     bot_count: int = 5
-    round_time_seconds: int = 105
-    rounds_to_win: int = 5
+    round_time_seconds: int = 115
+    rounds_to_win: int = 7
 
     @classmethod
     def load(cls) -> "GameSettings":
@@ -312,7 +442,13 @@ class GameSettings:
                 instance = cls(**filtered)
                 instance.mouse_sensitivity = float(max(5.0, min(140.0, instance.mouse_sensitivity)))
                 instance.master_volume = float(max(0.0, min(1.0, instance.master_volume)))
+                instance.fov = float(max(75.0, min(115.0, instance.fov)))
                 instance.bot_count = int(max(1, min(10, int(instance.bot_count))))
+                if instance.time_of_day not in ("DAY", "SUNSET", "NIGHT"):
+                    instance.time_of_day = "DAY"
+                if instance.bot_difficulty not in ("EASY", "NORMAL", "HARD"):
+                    instance.bot_difficulty = "NORMAL"
+                instance.crosshair_color_idx = int(instance.crosshair_color_idx) % len(CROSSHAIR_PALETTE)
                 return instance
             except Exception as exc:
                 print(f"[Settings] Не удалось прочитать {SETTINGS_FILE.name}: {exc}")
@@ -329,13 +465,9 @@ class GameSettings:
 
 
 class SoundManager:
-    """
-    Единый менеджер звука для выстрелов, шагов, интерфейса и музыки меню.
-    Использует Ursina Audio с автоматическим fallback на pygame.mixer (для .mp3)
-    и защитой от сбоев при отсутствии звукового устройства.
-    """
+    """Единый менеджер звука для оружия, гранат, C4, шагов, анонсеров и музыки меню."""
 
-    def __init__(self, master_volume: float = 0.65) -> None:
+    def __init__(self, master_volume: float = 0.68) -> None:
         self.master_volume: float = max(0.0, min(1.0, master_volume))
         Audio.volume_multiplier = self.master_volume
         self._music_audio: Audio | None = None
@@ -368,17 +500,16 @@ class SoundManager:
         Audio.volume_multiplier = self.master_volume
         if self._music_audio is not None and getattr(self._music_audio, "_clip", None) is not None:
             try:
-                self._music_audio.volume = 0.45
+                self._music_audio.volume = 0.42
             except Exception:
                 pass
         if self._pygame_ready and pygame is not None:
             try:
-                pygame.mixer.music.set_volume(self.master_volume * 0.45)
+                pygame.mixer.music.set_volume(self.master_volume * 0.42)
             except Exception:
                 pass
 
     def play_sfx(self, sound_name: str, volume: float = 0.85, pitch: float = 1.0) -> None:
-        """Проигрывает короткий звуковой эффект (.wav / .ogg / .mp3)."""
         if self.master_volume <= 0.001:
             return
 
@@ -386,7 +517,6 @@ class SoundManager:
         if sound_path is None:
             return
 
-        # Для .mp3 используем pygame.mixer, так как Panda3D лучше работает с .wav/.ogg
         if sound_path.suffix.lower() == ".mp3" and self._pygame_ready and pygame is not None:
             try:
                 sfx = pygame.mixer.Sound(str(sound_path))
@@ -420,7 +550,6 @@ class SoundManager:
             pass
 
     def play_menu_music(self, track_name: str = "menu_music") -> None:
-        """Запускает зацикленную фоновую тему главного меню."""
         self.stop_menu_music()
         sound_path = self._find_sound_file(track_name)
         if sound_path is None:
@@ -429,7 +558,7 @@ class SoundManager:
         if sound_path.suffix.lower() == ".mp3" and self._pygame_ready and pygame is not None:
             try:
                 pygame.mixer.music.load(str(sound_path))
-                pygame.mixer.music.set_volume(self.master_volume * 0.45)
+                pygame.mixer.music.set_volume(self.master_volume * 0.42)
                 pygame.mixer.music.play(-1)
                 return
             except Exception:
@@ -439,7 +568,7 @@ class SoundManager:
             rel_key = f"assets/sounds/{sound_path.name}"
             music = Audio(
                 rel_key,
-                volume=0.45,
+                volume=0.42,
                 loop=True,
                 autoplay=False,
                 auto_destroy=False,
@@ -455,7 +584,6 @@ class SoundManager:
             self._music_audio = None
 
     def stop_menu_music(self) -> None:
-        """Останавливает фоновую музыку меню при входе в матч."""
         if self._music_audio is not None:
             try:
                 self._music_audio.stop(destroy=True)
@@ -471,50 +599,271 @@ class SoundManager:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ТАКТИКО-ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ ОРУЖИЯ В СТИЛЕ CS2
+# ПОЛНЫЙ АРСЕНАЛ ОРУЖИЯ CS2 (10 ОБРАЗЦОВ + ПЕРЕКЛЮЧЕНИЕ РЕЖИМОВ ОГНЯ)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 WEAPON_SPECS: dict[str, dict[str, Any]] = {
     "ak47": {
         "slot": 1,
+        "category": "primary",
+        "price": 2700,
+        "kill_reward": 300,
         "display_name": "AK-47",
         "model_path": "assets/models/ak47.glb",
         "shoot_sound": "ak47_shoot",
         "automatic": True,
-        "fire_rate": 0.10,           # 600 выстр./мин (классика AK-47 в CS2)
-        "damage": 36,                # Урон в корпус
-        "headshot_mult": 3.5,        # Ваншот в голову (126 ед.)
-        "range": 130.0,
+        "burst_capable": False,
+        "silenced": False,
+        "pellets": 1,
+        "scope_levels": (),
+        "fire_rate": 0.10,
+        "damage": 36,
+        "headshot_mult": 3.5,
+        "armor_pen": 0.78,
+        "wallbang_mult": 0.55,
+        "range": 145.0,
         "falloff": 0.98,
         "mag_size": 30,
         "reserve_max": 90,
         "reload_time": 2.15,
-        "base_spread": 0.008,        # Точный первый выстрел
-        "max_spread": 0.068,
+        "base_spread": 0.007,
+        "max_spread": 0.066,
         "spread_per_shot": 0.011,
-        "recoil_pitch": 1.65,
+        "recoil_pitch": 1.62,
         "recoil_yaw": 0.55,
-        "mobility": 0.94,
+        "mobility": 0.93,
         "is_melee": False,
-        "view_pos": (0.28, -0.24, 0.48),
+        "view_pos": (0.27, -0.24, 0.47),
         "view_rot": (0.0, 180.0, 0.0),
         "view_scale": 0.72,
-        "muzzle_local": (0.0, 0.03, -0.68),
+    },
+    "m4a1": {
+        "slot": 1,
+        "category": "primary",
+        "price": 2900,
+        "kill_reward": 300,
+        "display_name": "M4A1-S",
+        "model_path": "assets/models/m4a1.glb",
+        "shoot_sound": "m4a1_shoot",
+        "automatic": True,
+        "burst_capable": False,
+        "silenced": True,
+        "pellets": 1,
+        "scope_levels": (68.0,),
+        "fire_rate": 0.095,
+        "damage": 34,
+        "headshot_mult": 3.15,
+        "armor_pen": 0.72,
+        "wallbang_mult": 0.50,
+        "range": 150.0,
+        "falloff": 0.99,
+        "mag_size": 20,
+        "reserve_max": 80,
+        "reload_time": 1.98,
+        "base_spread": 0.0045,
+        "max_spread": 0.044,
+        "spread_per_shot": 0.0075,
+        "recoil_pitch": 1.12,
+        "recoil_yaw": 0.34,
+        "mobility": 0.96,
+        "is_melee": False,
+        "view_pos": (0.26, -0.24, 0.46),
+        "view_rot": (0.0, 180.0, 0.0),
+        "view_scale": 0.70,
+    },
+    "awp": {
+        "slot": 1,
+        "category": "primary",
+        "price": 4750,
+        "kill_reward": 100,
+        "display_name": "AWP SNIPER",
+        "model_path": "assets/models/awp.glb",
+        "shoot_sound": "awp_shoot",
+        "automatic": False,
+        "burst_capable": False,
+        "silenced": False,
+        "pellets": 1,
+        "scope_levels": (38.0, 14.0),
+        "fire_rate": 1.18,
+        "damage": 118,
+        "headshot_mult": 4.0,
+        "armor_pen": 0.97,
+        "wallbang_mult": 0.80,
+        "range": 220.0,
+        "falloff": 0.995,
+        "mag_size": 5,
+        "reserve_max": 30,
+        "reload_time": 2.85,
+        "base_spread": 0.042,        # Без прицела разброс выше, в прицеле почти 0.0!
+        "max_spread": 0.090,
+        "spread_per_shot": 0.045,
+        "recoil_pitch": 4.80,
+        "recoil_yaw": 0.65,
+        "mobility": 0.82,
+        "is_melee": False,
+        "view_pos": (0.27, -0.25, 0.45),
+        "view_rot": (0.0, 180.0, 0.0),
+        "view_scale": 0.68,
+    },
+    "mp9": {
+        "slot": 1,
+        "category": "primary",
+        "price": 1250,
+        "kill_reward": 600,
+        "display_name": "MP9 SMG",
+        "model_path": "assets/models/mp9.glb",
+        "shoot_sound": "mp9_shoot",
+        "automatic": True,
+        "burst_capable": False,
+        "silenced": False,
+        "pellets": 1,
+        "scope_levels": (),
+        "fire_rate": 0.070,          # 857 выстр./мин!
+        "damage": 26,
+        "headshot_mult": 3.2,
+        "armor_pen": 0.60,
+        "wallbang_mult": 0.25,
+        "range": 95.0,
+        "falloff": 0.91,
+        "mag_size": 30,
+        "reserve_max": 120,
+        "reload_time": 1.75,
+        "base_spread": 0.010,
+        "max_spread": 0.056,
+        "spread_per_shot": 0.007,
+        "recoil_pitch": 0.92,
+        "recoil_yaw": 0.42,
+        "mobility": 1.04,
+        "is_melee": False,
+        "view_pos": (0.25, -0.23, 0.42),
+        "view_rot": (0.0, 180.0, 0.0),
+        "view_scale": 0.78,
+    },
+    "shotgun": {
+        "slot": 1,
+        "category": "primary",
+        "price": 2000,
+        "kill_reward": 900,
+        "display_name": "XM1014 SHOTGUN",
+        "model_path": "assets/models/shotgun.glb",
+        "shoot_sound": "shotgun_shoot",
+        "automatic": True,
+        "burst_capable": False,
+        "silenced": False,
+        "pellets": 8,
+        "scope_levels": (),
+        "fire_rate": 0.34,
+        "damage": 20,                # 8 картечин x 20 = до 160 урона вблизи!
+        "headshot_mult": 2.4,
+        "armor_pen": 0.75,
+        "wallbang_mult": 0.20,
+        "range": 55.0,
+        "falloff": 0.78,
+        "mag_size": 7,
+        "reserve_max": 32,
+        "reload_time": 2.25,
+        "base_spread": 0.044,
+        "max_spread": 0.075,
+        "spread_per_shot": 0.016,
+        "recoil_pitch": 3.40,
+        "recoil_yaw": 0.85,
+        "mobility": 0.95,
+        "is_melee": False,
+        "view_pos": (0.27, -0.24, 0.45),
+        "view_rot": (0.0, 180.0, 0.0),
+        "view_scale": 0.72,
+    },
+    "famas": {
+        "slot": 1,
+        "category": "primary",
+        "price": 2050,
+        "kill_reward": 300,
+        "display_name": "FAMAS",
+        "model_path": "assets/models/famas.glb",
+        "shoot_sound": "famas_shoot",
+        "automatic": True,
+        "burst_capable": True,       # ПКМ переключает AUTO <-> 3-ROUND BURST
+        "silenced": False,
+        "pellets": 1,
+        "scope_levels": (),
+        "fire_rate": 0.090,
+        "damage": 31,
+        "headshot_mult": 3.3,
+        "armor_pen": 0.70,
+        "wallbang_mult": 0.45,
+        "range": 135.0,
+        "falloff": 0.96,
+        "mag_size": 25,
+        "reserve_max": 90,
+        "reload_time": 2.10,
+        "base_spread": 0.0065,
+        "max_spread": 0.055,
+        "spread_per_shot": 0.009,
+        "recoil_pitch": 1.25,
+        "recoil_yaw": 0.45,
+        "mobility": 0.96,
+        "is_melee": False,
+        "view_pos": (0.26, -0.24, 0.44),
+        "view_rot": (0.0, 180.0, 0.0),
+        "view_scale": 0.72,
+    },
+    "usp": {
+        "slot": 2,
+        "category": "secondary",
+        "price": 200,
+        "kill_reward": 300,
+        "display_name": "USP-S",
+        "model_path": "assets/models/usp.glb",
+        "shoot_sound": "usp_shoot",
+        "automatic": False,
+        "burst_capable": False,
+        "silenced": True,
+        "pellets": 1,
+        "scope_levels": (),
+        "fire_rate": 0.17,
+        "damage": 35,
+        "headshot_mult": 3.5,
+        "armor_pen": 0.55,
+        "wallbang_mult": 0.25,
+        "range": 105.0,
+        "falloff": 0.93,
+        "mag_size": 12,
+        "reserve_max": 36,
+        "reload_time": 1.70,
+        "base_spread": 0.005,
+        "max_spread": 0.048,
+        "spread_per_shot": 0.014,
+        "recoil_pitch": 1.35,
+        "recoil_yaw": 0.35,
+        "mobility": 1.02,
+        "is_melee": False,
+        "view_pos": (0.25, -0.22, 0.42),
+        "view_rot": (0.0, 180.0, 0.0),
+        "view_scale": 0.80,
     },
     "deagle": {
         "slot": 2,
+        "category": "secondary",
+        "price": 700,
+        "kill_reward": 300,
         "display_name": "DESERT EAGLE",
         "model_path": "assets/models/deagle.glb",
         "shoot_sound": "deagle_shoot",
         "automatic": False,
-        "fire_rate": 0.27,           # Мощный полуавтоматический пистолет
-        "damage": 53,
-        "headshot_mult": 3.7,        # Знаменитый One-Deag (196 ед.)
-        "range": 100.0,
-        "falloff": 0.94,
+        "burst_capable": False,
+        "silenced": False,
+        "pellets": 1,
+        "scope_levels": (),
+        "fire_rate": 0.27,
+        "damage": 54,
+        "headshot_mult": 3.7,
+        "armor_pen": 0.93,
+        "wallbang_mult": 0.65,
+        "range": 115.0,
+        "falloff": 0.95,
         "mag_size": 7,
         "reserve_max": 35,
         "reload_time": 1.85,
-        "base_spread": 0.006,
+        "base_spread": 0.0055,
         "max_spread": 0.075,
         "spread_per_shot": 0.028,
         "recoil_pitch": 3.10,
@@ -524,58 +873,132 @@ WEAPON_SPECS: dict[str, dict[str, Any]] = {
         "view_pos": (0.26, -0.23, 0.44),
         "view_rot": (0.0, 180.0, 0.0),
         "view_scale": 0.82,
-        "muzzle_local": (0.0, 0.03, -0.28),
+    },
+    "glock": {
+        "slot": 2,
+        "category": "secondary",
+        "price": 200,
+        "kill_reward": 300,
+        "display_name": "GLOCK-18",
+        "model_path": "assets/models/glock.glb",
+        "shoot_sound": "glock_shoot",
+        "automatic": False,
+        "burst_capable": True,       # ПКМ переключает SEMI <-> 3-ROUND BURST
+        "silenced": False,
+        "pellets": 1,
+        "scope_levels": (),
+        "fire_rate": 0.14,
+        "damage": 29,
+        "headshot_mult": 3.4,
+        "armor_pen": 0.50,
+        "wallbang_mult": 0.20,
+        "range": 95.0,
+        "falloff": 0.90,
+        "mag_size": 20,
+        "reserve_max": 120,
+        "reload_time": 1.65,
+        "base_spread": 0.007,
+        "max_spread": 0.055,
+        "spread_per_shot": 0.012,
+        "recoil_pitch": 1.15,
+        "recoil_yaw": 0.40,
+        "mobility": 1.04,
+        "is_melee": False,
+        "view_pos": (0.25, -0.22, 0.41),
+        "view_rot": (0.0, 180.0, 0.0),
+        "view_scale": 0.82,
     },
     "knife": {
         "slot": 3,
-        "display_name": "TACTICAL KNIFE",
+        "category": "melee",
+        "price": 0,
+        "kill_reward": 1500,
+        "display_name": "KARAMBIT KNIFE",
         "model_path": "assets/models/knife.glb",
         "shoot_sound": "knife_slash",
         "automatic": False,
-        "fire_rate": 0.42,
+        "burst_capable": False,
+        "silenced": True,
+        "pellets": 1,
+        "scope_levels": (),
+        "fire_rate": 0.40,
+        "heavy_rate": 0.78,
         "damage": 55,
-        "headshot_mult": 1.85,
-        "range": 3.1,
+        "heavy_damage": 90,
+        "backstab_damage": 180,
+        "headshot_mult": 1.65,
+        "armor_pen": 0.88,
+        "wallbang_mult": 0.0,
+        "range": 3.25,
         "falloff": 1.0,
-        "mag_size": -1,              # Бесконечный боезапас
+        "mag_size": -1,
         "reserve_max": -1,
         "reload_time": 0.0,
         "base_spread": 0.0,
         "max_spread": 0.0,
         "spread_per_shot": 0.0,
-        "recoil_pitch": 0.6,
-        "recoil_yaw": 0.4,
-        "mobility": 1.14,            # Бег с ножом быстрее, как в CS2!
+        "recoil_pitch": 0.5,
+        "recoil_yaw": 0.3,
+        "mobility": 1.15,
         "is_melee": True,
         "view_pos": (0.27, -0.24, 0.40),
         "view_rot": (8.0, 165.0, -12.0),
         "view_scale": 0.85,
-        "muzzle_local": (0.0, 0.0, -0.25),
-    },
-    "m4a1": {
-        "slot": 4,
-        "display_name": "M4A1-S",
-        "model_path": "assets/models/m4a1.glb",
-        "shoot_sound": "m4a1_shoot",
-        "automatic": True,
-        "fire_rate": 0.095,          # Быстрая бесшумная стрельба с мягкой отдачей
-        "damage": 33,
-        "headshot_mult": 3.1,
-        "range": 135.0,
-        "falloff": 0.99,
-        "mag_size": 20,
-        "reserve_max": 80,
-        "reload_time": 2.00,
-        "base_spread": 0.005,
-        "max_spread": 0.046,
-        "spread_per_shot": 0.008,
-        "recoil_pitch": 1.15,
-        "recoil_yaw": 0.35,
-        "mobility": 0.96,
-        "is_melee": False,
-        "view_pos": (0.27, -0.24, 0.47),
-        "view_rot": (0.0, 180.0, 0.0),
-        "view_scale": 0.70,
-        "muzzle_local": (0.0, 0.02, -0.78),
     },
 }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ТАКТИЧЕСКИЕ ГРАНАТЫ И СНАРЯЖЕНИЕ CS2
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GRENADE_ORDER: tuple[str, ...] = ("he", "flash", "smoke", "molotov")
+
+GRENADE_SPECS: dict[str, dict[str, Any]] = {
+    "he": {
+        "display_name": "HE GRENADE",
+        "short": "HE",
+        "price": 300,
+        "max_carry": 1,
+        "fuse": 1.75,
+        "color_rgb": (92, 118, 72),
+    },
+    "flash": {
+        "display_name": "FLASHBANG",
+        "short": "FLASH",
+        "price": 200,
+        "max_carry": 2,
+        "fuse": 1.45,
+        "color_rgb": (215, 222, 232),
+    },
+    "smoke": {
+        "display_name": "SMOKE GRENADE",
+        "short": "SMOKE",
+        "price": 300,
+        "max_carry": 1,
+        "fuse": 1.80,
+        "color_rgb": (118, 132, 146),
+    },
+    "molotov": {
+        "display_name": "MOLOTOV FIRE",
+        "short": "MOLO",
+        "price": 400,
+        "max_carry": 1,
+        "fuse": 2.40,
+        "color_rgb": (225, 112, 34),
+    },
+}
+
+BUY_ITEMS: tuple[dict[str, Any], ...] = (
+    {"id": "ak47", "kind": "weapon", "label": "AK-47 Rifle", "price": 2700},
+    {"id": "m4a1", "kind": "weapon", "label": "M4A1-S Silenced", "price": 2900},
+    {"id": "awp", "kind": "weapon", "label": "AWP Sniper", "price": 4750},
+    {"id": "mp9", "kind": "weapon", "label": "MP9 Submachine", "price": 1250},
+    {"id": "shotgun", "kind": "weapon", "label": "XM1014 Shotgun", "price": 2000},
+    {"id": "famas", "kind": "weapon", "label": "FAMAS Burst/Auto", "price": 2050},
+    {"id": "deagle", "kind": "weapon", "label": "Desert Eagle", "price": 700},
+    {"id": "kevlar_helmet", "kind": "gear", "label": "Kevlar + Helmet", "price": 1000},
+    {"id": "defuse_stim", "kind": "gear", "label": "Defuse Kit + Stimshot", "price": 400},
+    {"id": "he", "kind": "grenade", "label": "HE Grenade", "price": 300},
+    {"id": "flash", "kind": "grenade", "label": "Flashbang", "price": 200},
+    {"id": "smoke", "kind": "grenade", "label": "Smoke + Molotov Pack", "price": 650},
+)
