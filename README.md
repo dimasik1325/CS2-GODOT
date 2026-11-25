@@ -14,29 +14,20 @@
 ## 1. Быстрый запуск (Windows — в один клик через `.bat`)
 
 Просто дважды кликните по файлу **`run_game.bat`** в корне проекта! Скрипт сам пошагово:
-1. Проверит наличие **Python 3.10+** (если его нет — автоматически скачает и тихо установит Python 3.11.9 x64 через `winget` или `python.org`; если уже есть — **пропустит**).
-2. Проверит виртуальное окружение **`.venv`** (если уже создано — **пропустит**).
-3. Проверит все библиотеки из `requirements.txt` (`Ursina`, `Panda3D`, `glTF`, `Pygame`, `NumPy`, `Pillow`) по контрольной сумме и импорту (если уже стоят — **мгновенно пропустит** без обращения к сети; если чего-то нет — докачает).
-4. Проверит наличие 3D-моделей `.glb`, текстур `.png` и звуков `.wav` в `assets/` (при необходимости сгенерирует недостающие).
-5. **Запустит игру** (`main.py`).
+1. Проверит команду **`python`** в системе (поддерживаются Python 3.10 / 3.11 / 3.12 / 3.13 / 3.14; если его вообще нет — автоматически скачает и тихо установит с `python.org`; если есть — **пропустит**).
+2. Поочерёдно проверит каждый компонент (`Panda3D`, `panda3d-gltf`, `panda3d-simplepbr`, `Pillow`, `NumPy`, `Ursina`, `Pygame`). Если библиотека уже стоит — выведет `[ПРОПУСК]` и не будет ничего качать; если отсутствует — установит через **`python -m pip install ...`**.
+3. Проверит наличие 3D-моделей `.glb`, текстур `.png` и звуков `.wav` в `assets/` (при необходимости сгенерирует недостающие).
+4. **Запустит игру** (`python main.py`).
 
 ### Ручной запуск через терминал (Windows / Linux / macOS)
 
-Требуется **Python 3.11+** (Windows 10/11, Linux или macOS).
+Требуется **Python 3.10+** (Windows 10/11, Linux или macOS).
 
 ```bash
-# 1. Создайте и активируйте виртуальное окружение
-python -m venv .venv
+# 1. Установите зависимости через python -m pip
+python -m pip install -r requirements.txt
 
-# Windows (PowerShell / CMD):
-.venv\Scripts\activate
-# Linux / macOS:
-source .venv/bin/activate
-
-# 2. Установите точные версии зависимостей
-pip install -r requirements.txt
-
-# 3. Запустите игру (стартовые .glb/.png/.wav/.ttf уже лежат в assets/!)
+# 2. Запустите игру (стартовые .glb/.png/.wav/.ttf уже лежат в assets/!)
 python main.py
 ```
 
@@ -57,12 +48,12 @@ python main.py
 
 ### Способ Б — Через `build.spec` из терминала
 ```powershell
-pyinstaller --clean -y build.spec
+python -m PyInstaller --clean -y build.spec
 ```
 
 ### Способ В — Одной командой PyInstaller из терминала (Windows)
 ```powershell
-pyinstaller --onefile --windowed --name cs2_clone --add-data "assets;assets" --collect-all ursina --collect-all panda3d --collect-all gltf --collect-all simplepbr main.py
+python -m PyInstaller --onefile --windowed --name cs2_clone --add-data "assets;assets" --collect-all ursina --collect-all panda3d --collect-all gltf --collect-all simplepbr main.py
 ```
 
 Готовый автономный файл появится по пути **`dist\cs2_clone.exe`** — он не требует установленного Python на целевом ПК и сохраняет пользовательские настройки в `user_settings.json` рядом с `.exe`.

@@ -5,41 +5,46 @@ title CS2 Clone - Build Standalone EXE
 
 cd /d "%~dp0"
 
-:: Сначала проверяем/докачиваем Python, .venv, зависимости и ассеты (если уже есть — пропускает)
+:: Проверяем и докачиваем все игровые компоненты (если уже стоят — пропускает)
 call "%~dp0run_game.bat" --setup-only
-if errorlevel 1 exit /b 1
+if not "%ERRORLEVEL%"=="0" exit /b 1
 
-set "VENV_PY=%~dp0.venv\Scripts\python.exe"
+:: Определяем рабочую команду Python (сначала python напрямую)
+set "PY_CMD=python"
+python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+if "%ERRORLEVEL%"=="0" goto :check_pyinstaller
 
+py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+if "%ERRORLEVEL%"=="0" set "PY_CMD=py -3"
+
+:check_pyinstaller
 echo.
 echo ==============================================================
 echo   ПРОВЕРКА PYINSTALLER И СБОРКА В ОДИН .EXE ФАЙЛ
 echo ==============================================================
 
-"%VENV_PY%" -c "import PyInstaller" >nul 2>&1
-if not errorlevel 1 goto :pyinstaller_ok
+%PY_CMD% -c "import PyInstaller" >nul 2>&1
+if "%ERRORLEVEL%"=="0" goto :pyinstaller_ok
 
-echo [СКАЧИВАНИЕ] Установка PyInstaller...
-"%VENV_PY%" -m pip install pyinstaller==6.11.1 --disable-pip-version-check
-if errorlevel 1 (
-    echo [ОШИБКА] Не удалось установить PyInstaller.
-    pause
-    exit /b 1
-)
-goto :start_build
+echo   [СКАЧИВАНИЕ] PyInstaller  --^>  %PY_CMD% -m pip install "pyinstaller>=6.11.1"
+%PY_CMD% -m pip install "pyinstaller>=6.11.1" --disable-pip-version-check
+if "%ERRORLEVEL%"=="0" goto :start_build
+
+%PY_CMD% -m pip install --user "pyinstaller>=6.11.1" --disable-pip-version-check
+if "%ERRORLEVEL%"=="0" goto :start_build
+
+echo.
+echo [ОШИБКА] Не удалось установить PyInstaller.
+pause
+exit /b 1
 
 :pyinstaller_ok
-echo [ПРОПУСК] PyInstaller уже установлен.
+echo   [ПРОПУСК] PyInstaller уже установлен.
 
 :start_build
-echo [СБОРКА] Компиляция dist\cs2_clone.exe через build.spec...
-"%VENV_PY%" -m PyInstaller --clean -y build.spec
-if errorlevel 1 (
-    echo.
-    echo [ОШИБКА] Сборка .exe завершилась с ошибкой.
-    pause
-    exit /b 1
-)
+echo   [СБОРКА] %PY_CMD% -m PyInstaller --clean -y build.spec ...
+%PY_CMD% -m PyInstaller --clean -y build.spec
+if not "%ERRORLEVEL%"=="0" goto :build_failed
 
 echo.
 echo ==============================================================
@@ -47,3 +52,9 @@ echo   ГОТОВО! Исполняемый файл создан: "%~dp0dist\cs
 echo ==============================================================
 pause
 exit /b 0
+
+:build_failed
+echo.
+echo [ОШИБКА] Сборка .exe завершилась с ошибкой.
+pause
+exit /b 1
