@@ -16,6 +16,8 @@ from src.settings import (
     SoundManager,
     load_safe_texture,
     resolve_font_path,
+    rgb32,
+    rgba32,
 )
 
 
@@ -52,7 +54,7 @@ class MenuManager:
             texture=bg_tex,
             scale=(1.95, 1.12),
             z=0.08,
-            color=color.white if bg_tex is not None else color.rgb(22, 28, 38),
+            color=color.white if bg_tex is not None else rgb32(22, 28, 38),
         )
         # Левая затемнённая колонка в стиле главного экрана CS2
         Entity(
@@ -60,7 +62,7 @@ class MenuManager:
             model="quad",
             position=(-0.44, 0.0, 0.05),
             scale=(0.68, 1.12),
-            color=color.rgba(10, 14, 22, 222),
+            color=rgba32(10, 14, 22, 222),
         )
 
         self._create_label(
@@ -68,35 +70,35 @@ class MenuManager:
             "COUNTER-STRIKE 2",
             pos=(-0.44, 0.34, 0.02),
             scale=1.85,
-            col=color.rgb(245, 166, 35),
+            col=rgb32(245, 166, 35),
         )
         self._create_label(
             self.main_panel,
             "PYTHON 3.11  •  URSINA 3D TACTICAL OPS",
             pos=(-0.44, 0.275, 0.02),
             scale=0.72,
-            col=color.rgb(185, 198, 218),
+            col=rgb32(185, 198, 218),
         )
 
         self._create_button(
             self.main_panel,
             "PLAY  /  ИГРАТЬ",
             pos=(-0.44, 0.11, 0.01),
-            accent=color.rgb(228, 138, 28),
+            accent=rgb32(228, 138, 28),
             on_click=self._handle_play_clicked,
         )
         self._create_button(
             self.main_panel,
             "SETTINGS  /  НАСТРОЙКИ",
             pos=(-0.44, -0.01, 0.01),
-            accent=color.rgb(36, 46, 62),
+            accent=rgb32(36, 46, 62),
             on_click=lambda: self.open_settings("main"),
         )
         self._create_button(
             self.main_panel,
             "QUIT  /  ВЫХОД",
             pos=(-0.44, -0.13, 0.01),
-            accent=color.rgb(138, 38, 38),
+            accent=rgb32(138, 38, 38),
             on_click=self._handle_quit,
         )
 
@@ -106,14 +108,14 @@ class MenuManager:
             model="quad",
             position=(0.30, -0.02, 0.05),
             scale=(0.62, 0.62),
-            color=color.rgba(12, 16, 24, 205),
+            color=rgba32(12, 16, 24, 205),
         )
         self._create_label(
             self.main_panel,
             "УПРАВЛЕНИЕ  /  CONTROLS",
             pos=(0.30, 0.22, 0.02),
             scale=1.02,
-            col=color.rgb(245, 185, 65),
+            col=rgb32(245, 185, 65),
         )
         controls_lines = (
             "WASD — Передвижение\n"
@@ -130,7 +132,7 @@ class MenuManager:
             controls_lines,
             pos=(0.30, -0.04, 0.02),
             scale=0.72,
-            col=color.rgb(218, 226, 238),
+            col=rgb32(218, 226, 238),
         )
 
         # ── 2. МЕНЮ ПАУЗЫ (ESC) ──
@@ -140,55 +142,55 @@ class MenuManager:
             model="quad",
             scale=(2.1, 1.2),
             z=0.06,
-            color=color.rgba(8, 12, 18, 195),
+            color=rgba32(8, 12, 18, 195),
         )
         Entity(
             parent=self.pause_panel,
             model="quad",
             position=(0.0, 0.0, 0.04),
             scale=(0.56, 0.72),
-            color=color.rgba(16, 22, 32, 238),
+            color=rgba32(16, 22, 32, 238),
         )
         self._create_label(
             self.pause_panel,
             "PAUSED  /  ПАУЗА",
             pos=(0.0, 0.27, 0.01),
             scale=1.45,
-            col=color.rgb(245, 175, 50),
+            col=rgb32(245, 175, 50),
         )
         self._create_button(
             self.pause_panel,
             "RESUME  (ESC)",
             pos=(0.0, 0.14, 0.01),
-            accent=color.rgb(46, 122, 195),
+            accent=rgb32(46, 122, 195),
             on_click=self._handle_resume_clicked,
         )
         self._create_button(
             self.pause_panel,
             "SETTINGS  /  НАСТРОЙКИ",
             pos=(0.0, 0.03, 0.01),
-            accent=color.rgb(38, 48, 64),
+            accent=rgb32(38, 48, 64),
             on_click=lambda: self.open_settings("pause"),
         )
         self._create_button(
             self.pause_panel,
             "RESTART MATCH  /  ЗАНОВО",
             pos=(0.0, -0.08, 0.01),
-            accent=color.rgb(38, 48, 64),
+            accent=rgb32(38, 48, 64),
             on_click=self._handle_restart_clicked,
         )
         self._create_button(
             self.pause_panel,
             "MAIN MENU  /  В МЕНЮ",
             pos=(0.0, -0.19, 0.01),
-            accent=color.rgb(92, 68, 32),
+            accent=rgb32(92, 68, 32),
             on_click=self._handle_main_menu_clicked,
         )
         self._create_button(
             self.pause_panel,
             "QUIT  /  ВЫХОД",
             pos=(0.0, -0.30, 0.01),
-            accent=color.rgb(138, 38, 38),
+            accent=rgb32(138, 38, 38),
             on_click=self._handle_quit,
         )
 
@@ -199,21 +201,21 @@ class MenuManager:
             model="quad",
             scale=(2.1, 1.2),
             z=0.07,
-            color=color.rgba(8, 12, 18, 225),
+            color=rgba32(8, 12, 18, 225),
         )
         Entity(
             parent=self.settings_panel,
             model="quad",
             position=(0.0, 0.0, 0.05),
             scale=(0.86, 0.72),
-            color=color.rgba(16, 22, 34, 242),
+            color=rgba32(16, 22, 34, 242),
         )
         self._create_label(
             self.settings_panel,
             "SETTINGS  /  НАСТРОЙКИ",
             pos=(0.0, 0.27, 0.01),
             scale=1.40,
-            col=color.rgb(245, 175, 50),
+            col=rgb32(245, 175, 50),
         )
 
         # Ползунок чувствительности мыши
@@ -222,7 +224,7 @@ class MenuManager:
             "Mouse Sensitivity (Чувствительность мыши):",
             pos=(0.0, 0.165, 0.01),
             scale=0.78,
-            col=color.rgb(210, 220, 235),
+            col=rgb32(210, 220, 235),
         )
         self.sens_slider = Slider(
             min=10,
@@ -240,7 +242,7 @@ class MenuManager:
             "Master Volume (Громкость звука и музыки):",
             pos=(0.0, 0.035, 0.01),
             scale=0.78,
-            col=color.rgb(210, 220, 235),
+            col=rgb32(210, 220, 235),
         )
         self.vol_slider = Slider(
             min=0.0,
@@ -258,7 +260,7 @@ class MenuManager:
             "Bots per Round (Количество врагов в раунде):",
             pos=(0.0, -0.095, 0.01),
             scale=0.78,
-            col=color.rgb(210, 220, 235),
+            col=rgb32(210, 220, 235),
         )
         self.bots_slider = Slider(
             min=2,
@@ -275,7 +277,7 @@ class MenuManager:
             self.settings_panel,
             "SAVE & BACK  /  СОХРАНИТЬ",
             pos=(0.0, -0.265, 0.01),
-            accent=color.rgb(228, 138, 28),
+            accent=rgb32(228, 138, 28),
             on_click=self.close_settings,
         )
 
@@ -296,7 +298,10 @@ class MenuManager:
             "color": col,
         }
         if self._font is not None:
-            kwargs["font"] = self._font
+            try:
+                return Text(**kwargs, font=self._font)
+            except Exception:
+                return Text(**kwargs)
         return Text(**kwargs)
 
     def _create_button(
@@ -318,7 +323,10 @@ class MenuManager:
             on_click=on_click,
         )
         if self._font is not None and btn.text_entity is not None:
-            btn.text_entity.font = self._font
+            try:
+                btn.text_entity.font = self._font
+            except Exception:
+                pass
             btn.text_entity.scale *= 0.88
         return btn
 

@@ -10,9 +10,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from ursina import AmbientLight, DirectionalLight, Entity, Sky, Vec2, Vec3, color
 
-from src.settings import load_safe_model, load_safe_texture
+from src.settings import load_safe_model, load_safe_texture, rgb32, rgba32
 
 
 class ArenaMap:
@@ -28,13 +30,13 @@ class ArenaMap:
         # Освещение в тёплой палитре CS2 Dust2
         self.sun_light = DirectionalLight(parent=self.root, y=22, z=-15, shadows=False)
         self.sun_light.look_at(Vec3(8, -1, 10))
-        self.sun_light.color = color.rgb(255, 246, 228)
+        self.sun_light.color = rgb32(255, 246, 228)
 
         self.ambient_light = AmbientLight(
             parent=self.root,
-            color=color.rgba(168, 176, 192, 255),
+            color=rgba32(168, 176, 192, 255),
         )
-        self.sky = Sky(color=color.rgb(168, 206, 242))
+        self.sky = Sky(color=rgb32(168, 206, 242))
 
         # Точки спавна игрока (CT — юг) и ботов (T — север и фланги A/B)
         self.ct_spawn_pos: Vec3 = Vec3(0.0, 0.2, -23.0)
@@ -117,7 +119,7 @@ class ArenaMap:
             scale=scale,
             texture=self._wall_tex,
             texture_scale=Vec2(max(1.0, scale[0] / 3.5), max(1.0, scale[1] / 3.5)),
-            color=tint if tint is not None else color.rgb(232, 212, 176),
+            color=tint if tint is not None else rgb32(232, 212, 176),
             collider="box",
         )
         self.entities.append(wall)
@@ -148,7 +150,7 @@ class ArenaMap:
                 scale=(size, size, size),
                 rotation_y=rot_y,
                 texture=self._crate_tex,
-                color=color.rgb(196, 152, 96),
+                color=rgb32(196, 152, 96),
                 collider="box",
             )
         self.entities.append(crate)
@@ -167,7 +169,7 @@ class ArenaMap:
             scale=(self.ARENA_SIZE, 1.0, self.ARENA_SIZE),
             texture=self._floor_tex,
             texture_scale=Vec2(22, 22),
-            color=color.rgb(224, 202, 162),
+            color=rgb32(224, 202, 162),
             collider="box",
         )
         self.entities.append(floor)
@@ -180,7 +182,7 @@ class ArenaMap:
             scale=(7.5, 1.0, 44.0),
             texture=self._wall_tex,
             texture_scale=Vec2(3, 16),
-            color=color.rgb(195, 180, 154),
+            color=rgb32(195, 180, 154),
         )
         self.entities.append(mid_road)
 
@@ -191,14 +193,14 @@ class ArenaMap:
         self._add_wall((-half, wh * 0.5, 0.0), (1.2, wh, self.ARENA_SIZE + 1.0))   # Запад (B)
 
         # 3. Защитные щиты спавнов CT и T (исключают прострел в первую секунду раунда)
-        self._add_wall((0.0, 1.65, -17.5), (8.5, 3.3, 0.9), color.rgb(214, 194, 158))
-        self._add_wall((0.0, 1.65, 18.0), (9.0, 3.3, 0.9), color.rgb(214, 194, 158))
+        self._add_wall((0.0, 1.65, -17.5), (8.5, 3.3, 0.9), rgb32(214, 194, 158))
+        self._add_wall((0.0, 1.65, 18.0), (9.0, 3.3, 0.9), rgb32(214, 194, 158))
 
         # 4. Центральный Мид — знаменитые «Двойные двери» (проход посередине под перестрелки)
         self._add_wall((-5.4, 1.9, -1.5), (7.2, 3.8, 1.0))
         self._add_wall((5.4, 1.9, -1.5), (7.2, 3.8, 1.0))
         # Перемычка арки над двойными дверями
-        self._add_wall((0.0, 4.4, -1.5), (4.0, 1.2, 1.0), color.rgb(186, 162, 128))
+        self._add_wall((0.0, 4.4, -1.5), (4.0, 1.2, 1.0), rgb32(186, 162, 128))
 
         # Знаменитый ящик Xbox возле дверей Мида (можно запрыгнуть по ступеньке!)
         self._add_crate((-2.4, 0.55, 0.4), size=1.1, rot_y=8.0)
@@ -212,12 +214,12 @@ class ArenaMap:
             scale=(11.0, 0.7, 15.0),
             texture=self._wall_tex,
             texture_scale=Vec2(5, 7),
-            color=color.rgb(210, 186, 145),
+            color=rgb32(210, 186, 145),
             collider="box",
         )
         self.entities.append(a_platform)
         # Ступень подъёма на Плент A со стороны CT и Мида
-        self._add_wall((12.4, 0.18, -3.5), (1.6, 0.36, 4.5), color.rgb(205, 182, 142))
+        self._add_wall((12.4, 0.18, -3.5), (1.6, 0.36, 4.5), rgb32(205, 182, 142))
         self._add_wall((14.0, 2.0, 9.8), (7.5, 4.0, 1.0))
         self._add_wall((14.0, 2.0, -9.8), (7.5, 4.0, 1.0))
 
@@ -232,10 +234,10 @@ class ArenaMap:
         self._add_wall((-13.5, 2.1, -9.0), (1.2, 4.2, 8.5))
         # Колонны B-плента
         for pz in (-5.0, 1.5, 7.5):
-            self._add_wall((-20.5, 2.2, pz), (1.5, 4.4, 1.5), color.rgb(204, 178, 138))
+            self._add_wall((-20.5, 2.2, pz), (1.5, 4.4, 1.5), rgb32(204, 178, 138))
 
         # Низкий парапет («окно» для стрельбы стоя и укрытия сидя на Ctrl!)
-        self._add_wall((-13.5, 0.58, -0.5), (1.0, 1.16, 4.4), color.rgb(192, 168, 130))
+        self._add_wall((-13.5, 0.58, -0.5), (1.0, 1.16, 4.4), rgb32(192, 168, 130))
 
         # Стек ящиков на B и выходах CT/T
         self._add_crate((-17.5, 0.75, -1.8), size=1.5, rot_y=-14.0)

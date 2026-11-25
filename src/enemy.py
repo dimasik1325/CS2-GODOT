@@ -16,7 +16,7 @@ from direct.actor.Actor import Actor
 from ursina import Entity, Vec3, color, destroy, invoke, lerp, raycast
 
 from src.player import CS2Player
-from src.settings import SoundManager, load_safe_model, resource_path
+from src.settings import SoundManager, load_safe_model, resource_path, rgb32, rgba32
 
 
 BOT_CALLSIGNS: tuple[str, ...] = (
@@ -71,7 +71,7 @@ class EnemyBot(Entity):
             model="sphere",
             position=(-0.12, 1.14, 0.72),
             scale=0.14,
-            color=color.rgb(255, 215, 85),
+            color=rgb32(255, 215, 85),
             unlit=True,
             enabled=False,
         )
@@ -103,7 +103,7 @@ class EnemyBot(Entity):
             model="quad",
             position=(0.0, 2.06, 0.0),
             scale=(0.62, 0.065),
-            color=color.rgba(15, 18, 22, 200),
+            color=rgba32(15, 18, 22, 200),
             billboard=True,
             unlit=True,
             enabled=False,
@@ -114,7 +114,7 @@ class EnemyBot(Entity):
             origin=(-0.5, 0.0),
             position=(-0.48, 0.0, -0.01),
             scale=(0.96, 0.72),
-            color=color.rgb(235, 65, 55),
+            color=rgb32(235, 65, 55),
             unlit=True,
         )
 
@@ -158,11 +158,11 @@ class EnemyBot(Entity):
 
     def _build_primitive_enemy(self) -> None:
         """Fallback-гуманоид в экипировке T-стороны из примитивов Ursina."""
-        jacket = color.rgb(174, 142, 96)
-        vest = color.rgb(46, 50, 56)
-        pants = color.rgb(66, 76, 62)
-        dark = color.rgb(34, 36, 40)
-        visor = color.rgb(220, 52, 42)
+        jacket = rgb32(174, 142, 96)
+        vest = rgb32(46, 50, 56)
+        pants = rgb32(66, 76, 62)
+        dark = rgb32(34, 36, 40)
+        visor = rgb32(220, 52, 42)
 
         Entity(parent=self.mesh_node, model="cube", position=(-0.14, 0.42, 0.0), scale=(0.19, 0.84, 0.22), color=pants)
         Entity(parent=self.mesh_node, model="cube", position=(0.14, 0.42, 0.0), scale=(0.19, 0.84, 0.22), color=pants)

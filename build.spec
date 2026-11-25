@@ -26,7 +26,7 @@ hiddenimports = [
 ]
 
 # Собираем встроенные меши (cube/quad/sphere), шейдеры, шрифты и рендер-плагины OpenGL/Audio
-for pkg_name in ("ursina", "panda3d", "gltf", "simplepbr"):
+for pkg_name in ("ursina", "sswg", "panda3d", "gltf", "simplepbr", "screeninfo", "pyperclip"):
     try:
         pkg_datas, pkg_bins, pkg_hidden = collect_all(pkg_name)
         datas.extend(pkg_datas)

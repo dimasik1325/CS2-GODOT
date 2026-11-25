@@ -12,8 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from panda3d.core import Filename, LPoint3f, NodePath
-from ursina import Audio, Texture, application
+from panda3d.core import Filename, FontPool, LPoint3f, NodePath, getModelPath
+from ursina import Audio, Texture, application, color
 
 try:
     import gltf
@@ -52,15 +52,94 @@ _GLB_CACHE: dict[str, NodePath] = {}
 _TEX_CACHE: dict[str, Texture | None] = {}
 
 
+def rgb32(r: float, g: float, b: float) -> Any:
+    """Создаёт цвет из диапазона 0..255 (совместимо и с Ursina 7.x, и с Ursina 8.x)."""
+    return color.Color(r / 255.0, g / 255.0, b / 255.0, 1.0)
+
+
+def rgba32(r: float, g: float, b: float, a: float = 255.0) -> Any:
+    """Создаёт цвет с альфа-каналом из диапазона 0..255 (совместимо с Ursina 7.x и 8.x)."""
+    return color.Color(r / 255.0, g / 255.0, b / 255.0, a / 255.0)
+
+
 def configure_ursina_asset_folder() -> None:
-    """Настраивает application.asset_folder и защищает mouse/camera при работе без окна."""
+    """
+    Настраивает пути ресурсов Ursina/Panda3D, защищает Text.font от бага Ursina 8.x
+    на Windows (NoneType.parent / обратные слеши / кириллица в путях) и mouse/camera без окна.
+    """
     application.asset_folder = RESOURCE_ROOT
-    from ursina import camera, mouse, window
+    fonts_dir = ASSETS_DIR / "fonts"
+    if fonts_dir.is_dir():
+        application.fonts_folder = fonts_dir
+        p3d_fonts_dir = Filename.fromOsSpecific(str(fonts_dir.resolve()))
+        getModelPath().append_path(p3d_fonts_dir)
+
+    from ursina import Text, camera, mouse, window
 
     if not hasattr(camera, "_clip_plane_far"):
         camera._clip_plane_far = 10000
     if not hasattr(camera, "_clip_plane_near"):
         camera._clip_plane_near = 0.05
+
+    # Патч безопасной загрузки шрифтов Text.font для Ursina 7.x и Ursina 8.x на Windows
+    if not getattr(Text, "_cs2_font_patched", False):
+
+        def _safe_font_getter(self: Any) -> Any:
+            return getattr(self, "_font", None)
+
+        def _safe_font_setter(self: Any, value: Any) -> None:
+            if not value:
+                return
+            candidate_paths: list[Path] = []
+            val_str = str(value)
+            direct_p = Path(val_str)
+            if direct_p.is_file():
+                candidate_paths.append(direct_p)
+            rel_p = RESOURCE_ROOT / val_str
+            if rel_p.is_file():
+                candidate_paths.append(rel_p)
+            in_fonts = ASSETS_DIR / "fonts" / Path(val_str).name
+            if in_fonts.is_file():
+                candidate_paths.append(in_fonts)
+
+            for folder_attr in ("fonts_folder", "asset_folder", "internal_fonts_folder"):
+                folder = getattr(application, folder_attr, None)
+                if isinstance(folder, Path) and folder.is_dir():
+                    for found in folder.glob(f"**/{Path(val_str).name}"):
+                        if found.is_file():
+                            candidate_paths.append(found)
+                            break
+                    if candidate_paths:
+                        break
+
+            loaded_font = None
+            if candidate_paths:
+                target = candidate_paths[0].resolve()
+                try:
+                    p3d_dir = Filename.fromOsSpecific(str(target.parent))
+                    getModelPath().append_path(p3d_dir)
+                    p3d_full = Filename.fromOsSpecific(str(target)).getFullpath()
+                    loaded_font = FontPool.load_font(p3d_full) or FontPool.load_font(target.name)
+                except Exception:
+                    loaded_font = None
+            else:
+                try:
+                    loaded_font = FontPool.load_font(val_str)
+                except Exception:
+                    loaded_font = None
+
+            if loaded_font:
+                self._font = loaded_font
+                self._font.clear()
+                self._font.setPixelsPerUnit(getattr(self, "resolution", Text.default_resolution))
+                self._font.setLineHeight(getattr(self, "line_height", 1))
+                if getattr(self, "raw_text", None):
+                    self.text = self.raw_text
+
+        Text.font_getter = _safe_font_getter
+        Text.font_setter = _safe_font_setter
+        Text.font = property(_safe_font_getter, _safe_font_setter)
+        Text._cs2_font_patched = True
 
     mouse_cls = type(mouse)
     if not getattr(mouse_cls, "_cs2_safe_patched", False):
@@ -92,17 +171,18 @@ def resource_path(relative_path: str | Path) -> Path:
 
 def resolve_font_path(relative_path: str = "assets/fonts/hud_font.ttf") -> str | None:
     """
-    Проверяет наличие .ttf шрифта и возвращает путь в формате Panda3D (forward-slashes).
+    Проверяет наличие .ttf шрифта и возвращает его имя (совместимо с Ursina 7.x и 8.x).
     Если шрифт не найден — возвращает None (Ursina использует встроенный шрифт).
     """
     full_path = resource_path(relative_path)
     if full_path.is_file():
-        return str(Filename.fromOsSpecific(str(full_path)).getFullpath())
-    # Поиск любого .ttf в assets/fonts/
+        getModelPath().append_path(Filename.fromOsSpecific(str(full_path.parent.resolve())))
+        return full_path.name
     fonts_dir = ASSETS_DIR / "fonts"
     if fonts_dir.is_dir():
         for candidate in sorted(fonts_dir.glob("*.ttf")):
-            return str(Filename.fromOsSpecific(str(candidate)).getFullpath())
+            getModelPath().append_path(Filename.fromOsSpecific(str(candidate.parent.resolve())))
+            return candidate.name
     return None
 
 

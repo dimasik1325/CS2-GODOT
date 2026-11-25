@@ -33,6 +33,8 @@ from src.settings import (
     load_safe_model,
     load_safe_texture,
     resource_path,
+    rgb32,
+    rgba32,
 )
 
 
@@ -96,14 +98,14 @@ class WeaponViewModel(Entity):
                     parent=self.muzzle_flash,
                     model="cube",
                     scale=(0.16, 0.04, 0.04),
-                    color=color.rgb(255, 220, 95),
+                    color=rgb32(255, 220, 95),
                     unlit=True,
                 )
                 Entity(
                     parent=self.muzzle_flash,
                     model="cube",
                     scale=(0.04, 0.16, 0.04),
-                    color=color.rgb(255, 185, 55),
+                    color=rgb32(255, 185, 55),
                     unlit=True,
                 )
 
@@ -149,11 +151,11 @@ class WeaponViewModel(Entity):
 
     def _build_primitive_fallback(self, weapon_id: str) -> None:
         """Строит детализированное оружие из примитивов Ursina, если .glb файл удалён или не найден."""
-        steel = color.rgb(44, 47, 52)
-        gunmetal = color.rgb(68, 72, 78)
-        wood = color.rgb(128, 72, 32)
-        bakelite = color.rgb(178, 78, 28)
-        chrome = color.rgb(198, 204, 214)
+        steel = rgb32(44, 47, 52)
+        gunmetal = rgb32(68, 72, 78)
+        wood = rgb32(128, 72, 32)
+        bakelite = rgb32(178, 78, 28)
+        chrome = rgb32(198, 204, 214)
 
         if weapon_id == "ak47":
             Entity(parent=self.mesh_holder, model="cube", scale=(0.055, 0.075, 0.34), position=(0, 0, 0.04), color=steel)
@@ -471,10 +473,10 @@ class WeaponManager:
                 self.on_hit_enemy(is_headshot, killed, spec["display_name"], enemy.bot_name)
 
             # Красная искра попадания по цели
-            self._spawn_impact_spark(hit_info.world_point, color.rgb(230, 45, 40))
+            self._spawn_impact_spark(hit_info.world_point, rgb32(230, 45, 40))
         else:
             # Попадание в стену, пол или ящик: искра + след пули
-            self._spawn_impact_spark(hit_info.world_point, color.rgb(255, 205, 95))
+            self._spawn_impact_spark(hit_info.world_point, rgb32(255, 205, 95))
             if not spec["is_melee"]:
                 self._spawn_bullet_decal(hit_info.world_point, hit_info.world_normal)
 
@@ -499,7 +501,7 @@ class WeaponManager:
             model="cube",
             position=world_pt + world_normal * 0.012,
             scale=(0.055, 0.055, 0.012),
-            color=color.rgba(28, 26, 24, 215),
+            color=rgba32(28, 26, 24, 215),
             unlit=True,
         )
         decal.look_at(decal.position + world_normal)
